@@ -1,0 +1,17 @@
+FastAPI Production Engineering Guide
+
+1. Introduction
+FastAPI is a modern, high-performance web framework for building APIs with Python 3.8+ based on standard Python type hints. It is built on top of Starlette for web routing and Pydantic for data validation and serialization.
+
+2. Key Features
+- High Performance: On par with NodeJS and Go thanks to Starlette and Uvicorn.
+- Fast to code: Increases development speed and feature velocity by 200% to 300%.
+- Fewer bugs: Reduces about 40% of developer-induced errors through automatic type validation.
+- Intuitive: Great editor support with auto-completion everywhere.
+- Standards-based: Fully compatible with OpenAPI (Swagger) and JSON Schema.
+
+3. Asynchronous Request Handling
+FastAPI supports standard `def` functions as well as `async def` endpoints. For I/O-bound tasks like making HTTP requests to Ollama or running vector queries against ChromaDB, `async def` allows thousands of concurrent connections on a single worker process without thread-pool exhaustion.
+
+4. Dependency Injection
+The `Depends()` mechanism enables reusable components for database session management, authentication tokens, rate limiting, and shared service instances across request handlers.

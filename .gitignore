@@ -1,0 +1,18 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local Database & Storage
+data/chroma_db/
+data/brain.db
+data/brain.db-wal
+data/brain.db-shm
+
+# Environment & IDE
+.env
+.idea/
+.vscode/
+.DS_Store
