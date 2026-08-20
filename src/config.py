@@ -14,7 +14,12 @@ class Settings(BaseSettings):
     # Ollama Settings
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
     EMBEDDING_MODEL: str = "nomic-embed-text"
-    LLM_MODEL: str = "llama3.1:8b"
+    LLM_MODEL: str = "llama3.2"
+    LLM_TEMPERATURE: float = 0.1
+
+    # Retrieval Configuration
+    SIMILARITY_THRESHOLD: float = 0.40
+    TOP_K: int = 5
 
     # Chunking Configuration
     CHUNK_SIZE: int = 1000

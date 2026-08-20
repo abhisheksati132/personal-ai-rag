@@ -53,16 +53,46 @@ pip install -r requirements.txt
 
 ---
 
-## 🛠️ Usage
+## 🚀 Running the FastAPI Backend (Phase 2)
 
-### Ingest Documents
-Point the ingestion script at your documents folder:
+Start the local FastAPI server:
 ```powershell
-# Ingest data/documents directory using local Ollama nomic-embed-text
-python -m src.ingest --dir data/documents
+.\.venv\Scripts\uvicorn.exe src.api:app --host 127.0.0.1 --port 8000 --reload
+```
 
-# Or run with mock embeddings for offline testing / development
-python -m src.ingest --dir data/documents --mock-embeddings
+### API Endpoints
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `POST` | `/query` | Submit a question and get a grounded answer with source citations |
+| `GET` | `/health` | Verify Ollama connectivity, model status, and vector counts |
+| `GET` | `/stats` | Aggregate database indexing statistics |
+
+### Test `/query` via PowerShell or curl
+```powershell
+# PowerShell
+Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:8000/query" `
+  -ContentType "application/json" `
+  -Body '{"question": "How many ports and links are needed for 5 devices in full mesh topology?"}'
+
+# curl
+curl -X POST http://127.0.0.1:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Explain how a compiler processes source code through all compilation phases."}'
+```
+
+### Example JSON Response
+```json
+{
+  "answer": "A modern compiler processes source code through several sequential phases: Lexical Analysis tokenizes the input, Syntax Analysis builds the parse tree, Semantic Analysis verifies types, Intermediate Code Generation produces 3-address code, Code Optimization improves efficiency, and Code Generation produces machine instructions. [source: BCSE307L-CAT-1-A2-2025-2026.pdf]",
+  "sources": [
+    {
+      "file": "BCSE307L-CAT-1-A2-2025-2026.pdf",
+      "chunk_index": 0,
+      "score": 0.8142
+    }
+  ]
+}
 ```
 
 ### Ingestion CLI Options
