@@ -26,6 +26,13 @@ class TestAPI(unittest.TestCase):
         data = response.json()
         self.assertIn("total_files", data)
 
+    def test_files_endpoint(self):
+        response = self.client.get("/files")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIsInstance(data, list)
+
+
     def test_query_validation_empty_string(self):
         response = self.client.post("/query", json={"question": ""})
         self.assertEqual(response.status_code, 422)

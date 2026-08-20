@@ -1,15 +1,16 @@
 from pathlib import Path
-# pyrefly: ignore [missing-import]
+from typing import Optional
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     # Base Directories
     BASE_DIR: Path = Path(__file__).resolve().parent.parent
-    DATA_DIR: Path = BASE_DIR / "data"
-    DOCUMENTS_DIR: Path = DATA_DIR / "documents"
-    CHROMA_DIR: Path = DATA_DIR / "chroma_db"
-    SQLITE_DB_PATH: Path = DATA_DIR / "brain.db"
+    DATA_DIR: Optional[Path] = None
+    DOCUMENTS_DIR: Optional[Path] = None
+    CHROMA_DIR: Optional[Path] = None
+    SQLITE_DB_PATH: Optional[Path] = None
 
     # Ollama Settings
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
@@ -31,11 +32,26 @@ class Settings(BaseSettings):
     # Supported File Extensions
     SUPPORTED_EXTENSIONS: list[str] = [".pdf", ".docx", ".txt", ".md"]
 
+    @model_validator(mode="after")
+    def resolve_paths(self) -> "Settings":
+        if self.DATA_DIR is None:
+            self.DATA_DIR = self.BASE_DIR / "data"
+        if self.DOCUMENTS_DIR is None:
+            self.DOCUMENTS_DIR = self.DATA_DIR / "documents"
+        if self.CHROMA_DIR is None:
+            self.CHROMA_DIR = self.DATA_DIR / "chroma_db"
+        if self.SQLITE_DB_PATH is None:
+            self.SQLITE_DB_PATH = self.DATA_DIR / "brain.db"
+        return self
+
     def ensure_directories(self) -> None:
         """Create necessary directories if they don't exist."""
-        self.DATA_DIR.mkdir(parents=True, exist_ok=True)
-        self.DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
-        self.CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+        if self.DATA_DIR:
+            self.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if self.DOCUMENTS_DIR:
+            self.DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+        if self.CHROMA_DIR:
+            self.CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
     class Config:
         env_prefix = "BRAIN_"
@@ -45,3 +61,4 @@ class Settings(BaseSettings):
 
 settings = Settings()
 settings.ensure_directories()
+

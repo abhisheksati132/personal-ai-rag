@@ -2,7 +2,12 @@
   "venvPath": ".",
   "venv": ".venv",
   "extraPaths": [
+    "."
+  ],
+  "include": [
     "src",
-    ".venv/Lib/site-packages"
+    "tests",
+    "scripts"
   ]
 }
+

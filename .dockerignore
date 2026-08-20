@@ -1,0 +1,14 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+.git
+.gitignore
+.vscode
+.idea
+frontend/
+data/chroma_db
+data/brain.db*
+tests/

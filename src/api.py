@@ -176,3 +176,10 @@ def health_check() -> HealthResponse:
 def get_stats() -> dict:
     """Return current database indexing stats."""
     return _db.get_stats()
+
+
+@app.get("/files", summary="List all tracked and indexed files")
+def list_files() -> list[dict]:
+    """Return list of all indexed/tracked files with chunk count, file size, status, and indexed timestamp."""
+    return _db.list_all_files()
+

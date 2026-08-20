@@ -1,0 +1,116 @@
+services:
+  # ----------------------------------------------------------------------------
+  # 1. Ollama LLM & Embedding Service
+  # ----------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: brain-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ----------------------------------------------------------------------------
+  # 2. FastAPI Backend (Retrieval & Ingestion API)
+  # ----------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: brain-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - PYTHONUNBUFFERED=1
+      - BRAIN_OLLAMA_BASE_URL=${BRAIN_OLLAMA_BASE_URL:-http://ollama:11434}
+      - BRAIN_DATA_DIR=/app/data
+      - BRAIN_DOCUMENTS_DIR=/app/data/documents
+      - BRAIN_CHROMA_DIR=/app/data/chroma_db
+      - BRAIN_SQLITE_DB_PATH=/app/data/brain.db
+      - BRAIN_LLM_MODEL=${BRAIN_LLM_MODEL:-llama3.2}
+      - BRAIN_EMBEDDING_MODEL=${BRAIN_EMBEDDING_MODEL:-nomic-embed-text}
+      - BRAIN_LLM_TEMPERATURE=${BRAIN_LLM_TEMPERATURE:-0.1}
+      - BRAIN_SIMILARITY_THRESHOLD=${BRAIN_SIMILARITY_THRESHOLD:-0.40}
+      - BRAIN_TOP_K=${BRAIN_TOP_K:-5}
+      - BRAIN_CHUNK_SIZE=${BRAIN_CHUNK_SIZE:-1000}
+      - BRAIN_CHUNK_OVERLAP=${BRAIN_CHUNK_OVERLAP:-150}
+    volumes:
+      - ./data/documents:/app/data/documents
+      - ./data/chroma_db:/app/data/chroma_db
+      - ./data/brain.db:/app/data/brain.db
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ----------------------------------------------------------------------------
+  # 3. Real-Time Document Watcher Service (Phase 3)
+  # ----------------------------------------------------------------------------
+  watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: brain-watcher
+    command: ["python", "-m", "src.watcher", "--dir", "/app/data/documents"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - PYTHONUNBUFFERED=1
+      - BRAIN_OLLAMA_BASE_URL=${BRAIN_OLLAMA_BASE_URL:-http://ollama:11434}
+      - BRAIN_DATA_DIR=/app/data
+      - BRAIN_DOCUMENTS_DIR=/app/data/documents
+      - BRAIN_CHROMA_DIR=/app/data/chroma_db
+      - BRAIN_SQLITE_DB_PATH=/app/data/brain.db
+      - BRAIN_LLM_MODEL=${BRAIN_LLM_MODEL:-llama3.2}
+      - BRAIN_EMBEDDING_MODEL=${BRAIN_EMBEDDING_MODEL:-nomic-embed-text}
+      - BRAIN_LLM_TEMPERATURE=${BRAIN_LLM_TEMPERATURE:-0.1}
+      - BRAIN_SIMILARITY_THRESHOLD=${BRAIN_SIMILARITY_THRESHOLD:-0.40}
+      - BRAIN_TOP_K=${BRAIN_TOP_K:-5}
+      - BRAIN_CHUNK_SIZE=${BRAIN_CHUNK_SIZE:-1000}
+      - BRAIN_CHUNK_OVERLAP=${BRAIN_CHUNK_OVERLAP:-150}
+    volumes:
+      - ./data/documents:/app/data/documents
+      - ./data/chroma_db:/app/data/chroma_db
+      - ./data/brain.db:/app/data/brain.db
+    depends_on:
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+
+  # ----------------------------------------------------------------------------
+  # 4. Next.js Web UI Frontend (Phase 4)
+  # ----------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=http://localhost:8000
+    container_name: brain-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+# ------------------------------------------------------------------------------
+# Persistent Volumes
+# ------------------------------------------------------------------------------
+volumes:
+  ollama_data:
+    name: brain-ollama-data

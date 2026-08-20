@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+@theme {
+  --color-paper: #F6F5F2;
+  --color-ink: #1C1B1A;
+  --color-moss: #5B6B5B;
+  --color-pine: #3D5A4C;
+  --color-stone: #8A8578;
+  --color-card: #FFFFFF;
+
+  --font-serif: var(--font-fraunces), serif;
+  --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+:root {
+  --background: #F6F5F2;
+  --foreground: #1C1B1A;
+}
+
+body {
+  background-color: #F6F5F2;
+  color: #1C1B1A;
+}
+
+/* Retrieval Card Stagger Animation */
+@keyframes slideUpFade {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.retrieval-card-stagger {
+  animation: slideUpFade 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .retrieval-card-stagger {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Custom subtle scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #8A857833;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #5B6B5B66;
+}

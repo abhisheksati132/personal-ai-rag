@@ -30,6 +30,11 @@ from watchdog.events import (
     FileSystemEventHandler,
 )
 from watchdog.observers import Observer
+try:
+    from watchdog.observers.polling import PollingObserver
+except ImportError:
+    PollingObserver = Observer
+
 
 from src.config import settings
 from src.db import Database
@@ -307,8 +312,9 @@ class DocumentWatcher:
             max_settle_retries=self.max_settle_retries,
             on_event_callback=self.on_event_callback,
         )
-        self.observer = Observer()
+        self.observer = PollingObserver(timeout=1.0)
         self._is_running = False
+
 
     def start(self) -> None:
         """Start the filesystem observer."""

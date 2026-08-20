@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.log
 
 # Local Database & Storage
 data/chroma_db/
@@ -11,8 +12,16 @@ data/brain.db
 data/brain.db-wal
 data/brain.db-shm
 
+# Frontend & Node
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env*.local
+
 # Environment & IDE
 .env
 .idea/
 .vscode/
 .DS_Store
+
