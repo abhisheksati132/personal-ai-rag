@@ -71,21 +71,21 @@ class RetrievalService:
         # 3. Map and filter results
         retrieved_chunks: list[RetrievedChunk] = []
         for r in raw_results:
-            meta = r.get("metadata", {})
-            score = float(r.get("score", 0.0))
+            meta = r.get("metadata") or {}
+            score = float(r.get("score") or 0.0)
 
             # Apply relevance threshold filter
             if score < threshold:
                 logger.debug(
-                    f"Discarding chunk from {meta.get('file_name')} (score {score:.4f} < threshold {threshold:.4f})"
+                    f"Discarding chunk from {meta.get('file_name', 'unknown')} (score {score:.4f} < threshold {threshold:.4f})"
                 )
                 continue
 
             chunk = RetrievedChunk(
-                text=r.get("text", ""),
+                text=r.get("text", "") or "",
                 file_name=meta.get("file_name") or "unknown",
                 source_path=meta.get("source") or meta.get("file_path") or "unknown",
-                chunk_index=int(meta.get("chunk_index", 0)),
+                chunk_index=int(meta.get("chunk_index") or 0),
                 score=score,
                 metadata=meta,
             )

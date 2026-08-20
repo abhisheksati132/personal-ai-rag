@@ -90,58 +90,91 @@ TEST_QUESTIONS = [
 ]
 
 
+import httpx
+
+API_URL = "http://127.0.0.1:8000/query"
+HEALTH_URL = "http://127.0.0.1:8000/health"
+
+
 def run_verification():
-    console.print(Panel.fit("[bold cyan]Personal AI Brain - Phase 2 Live Verification Suite[/bold cyan]"))
+    console.print(Panel.fit("[bold cyan]Personal AI Brain - Live HTTP Verification Suite (FastAPI Port 8000)[/bold cyan]"))
+
+    # 1. Health check over HTTP
+    try:
+        health_res = httpx.get(HEALTH_URL, timeout=5.0)
+        console.print(f"[bold green]GET /health:[/bold green] HTTP {health_res.status_code} - {health_res.json()}")
+    except Exception as e:
+        console.print(f"[bold red]GET /health failed:[/bold red] {e}")
+        return
+
     results_summary = []
 
-    for item in TEST_QUESTIONS:
-        q_id = item["id"]
-        question = item["question"]
-        expected = item["expected_topic"]
+    # 2. Execute questions over real HTTP POST /query
+    with httpx.Client(timeout=90.0) as client:
+        for item in TEST_QUESTIONS:
+            q_id = item["id"]
+            question = item["question"]
+            expected = item["expected_topic"]
 
-        console.print(f"\n[bold yellow]Query {q_id}:[/bold yellow] {question}")
-        console.print(f"[dim]Expected focus: {expected}[/dim]")
+            console.print(f"\n[bold yellow]Query {q_id}:[/bold yellow] {question}")
+            console.print(f"[dim]Expected focus: {expected}[/dim]")
 
-        start = time.time()
-        try:
-            req = QueryRequest(question=question)
-            res = query_documents(req)
-            elapsed = time.time() - start
+            start = time.time()
+            try:
+                response = client.post(API_URL, json={"question": question})
+                elapsed = time.time() - start
 
-            sources_str = ", ".join([f"{s.file} (chunk #{s.chunk_index}, score={s.score:.3f})" for s in res.sources]) or "None"
+                if response.status_code == 200:
+                    data = response.json()
+                    answer = data.get("answer", "")
+                    sources = data.get("sources", [])
+                    sources_str = ", ".join([f"{s['file']} (chunk #{s['chunk_index']}, score={s['score']:.3f})" for s in sources]) or "None"
 
-            console.print(f"[bold green]Answer ({elapsed:.2f}s):[/bold green]")
-            console.print(Panel(res.answer, title=f"Grounded Response ({sources_str})", border_style="green"))
+                    console.print(f"[bold green]HTTP {response.status_code} Answer ({elapsed:.2f}s):[/bold green]")
+                    console.print(Panel(answer, title=f"Grounded Response ({sources_str})", border_style="green"))
 
-            results_summary.append({
-                "id": q_id,
-                "question": question[:45] + "...",
-                "sources": sources_str[:35] + ("..." if len(sources_str) > 35 else ""),
-                "status": "PASS" if res.answer else "FAIL",
-                "time": f"{elapsed:.2f}s",
-            })
+                    results_summary.append({
+                        "id": q_id,
+                        "question": question[:45] + "...",
+                        "http": f"{response.status_code}",
+                        "sources": sources_str[:35] + ("..." if len(sources_str) > 35 else ""),
+                        "status": "PASS",
+                        "time": f"{elapsed:.2f}s",
+                    })
+                else:
+                    console.print(f"[bold red]HTTP {response.status_code}:[/bold red] {response.text}")
+                    results_summary.append({
+                        "id": q_id,
+                        "question": question[:45] + "...",
+                        "http": f"{response.status_code}",
+                        "sources": "N/A",
+                        "status": f"HTTP {response.status_code}",
+                        "time": f"{elapsed:.2f}s",
+                    })
 
-        except Exception as e:
-            elapsed = time.time() - start
-            console.print(f"[bold red]Failed with error ({elapsed:.2f}s):[/bold red] {e}")
-            results_summary.append({
-                "id": q_id,
-                "question": question[:45] + "...",
-                "sources": "ERROR",
-                "status": f"ERR: {e}",
-                "time": f"{elapsed:.2f}s",
-            })
+            except Exception as e:
+                elapsed = time.time() - start
+                console.print(f"[bold red]Request failed ({elapsed:.2f}s):[/bold red] {e}")
+                results_summary.append({
+                    "id": q_id,
+                    "question": question[:45] + "...",
+                    "http": "ERR",
+                    "sources": "ERROR",
+                    "status": f"ERR: {e}",
+                    "time": f"{elapsed:.2f}s",
+                })
 
     # Print summary table
-    table = Table(title="Live Verification Summary", header_style="bold magenta")
+    table = Table(title="FastAPI HTTP Verification Summary (Port 8000)", header_style="bold magenta")
     table.add_column("#", style="bold")
     table.add_column("Question", style="cyan")
+    table.add_column("HTTP", style="bold green")
     table.add_column("Cited Sources", style="green")
     table.add_column("Status", style="bold white")
     table.add_column("Latency", style="dim")
 
     for r in results_summary:
-        table.add_row(str(r["id"]), r["question"], r["sources"], r["status"], r["time"])
+        table.add_row(str(r["id"]), r["question"], r["http"], r["sources"], r["status"], r["time"])
 
     console.print("\n")
     console.print(table)

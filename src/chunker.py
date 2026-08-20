@@ -59,10 +59,22 @@ class RecursiveChunker:
         chunk_index = 0
         char_search_offset = 0
 
+        import re
+        section_pattern = re.compile(
+            r"^(?:\n\s*|\A)(?:[a-zA-Z]\)|Question\s+\d+|#+\s+|\d+\.\s+|[A-Z\s]{4,}:)",
+            re.MULTILINE,
+        )
+
         for piece in raw_splits:
             piece_len = len(piece)
+            is_new_section = bool(section_pattern.search(piece[:60]))
 
-            if current_len + piece_len > self.chunk_size and current_pieces:
+            # Flush if size exceeded OR if a distinct new section starts and current chunk is substantial
+            should_flush = (current_len + piece_len > self.chunk_size) or (
+                is_new_section and current_len >= min(250, int(self.chunk_size * 0.4))
+            )
+
+            if should_flush and current_pieces:
                 # Flush current chunk
                 chunk_str = "".join(current_pieces).strip()
                 if chunk_str:
@@ -84,15 +96,16 @@ class RecursiveChunker:
                     )
                     chunk_index += 1
 
-                # Retain overlap pieces from end of current_pieces
+                # Retain overlap pieces from end of current_pieces unless starting a brand new top-level section
                 overlap_pieces: list[str] = []
-                overlap_len = 0
-                for p in reversed(current_pieces):
-                    if overlap_len + len(p) <= self.chunk_overlap:
-                        overlap_pieces.insert(0, p)
-                        overlap_len += len(p)
-                    else:
-                        break
+                if not is_new_section:
+                    overlap_len = 0
+                    for p in reversed(current_pieces):
+                        if overlap_len + len(p) <= self.chunk_overlap:
+                            overlap_pieces.insert(0, p)
+                            overlap_len += len(p)
+                        else:
+                            break
 
                 current_pieces = overlap_pieces
                 current_len = sum(len(p) for p in current_pieces)

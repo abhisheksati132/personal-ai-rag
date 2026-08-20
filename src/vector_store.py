@@ -1,9 +1,7 @@
 import logging
 from pathlib import Path
 from typing import Any, Optional
-# pyrefly: ignore [missing-import]
 import chromadb
-# pyrefly: ignore [missing-import]
 from chromadb.config import Settings as ChromaSettings
 
 from src.chunker import Chunk
@@ -121,8 +119,8 @@ class ChromaVectorStore:
                 score = round(1.0 - float(dist), 4) if dist is not None else 1.0
                 formatted_results.append({
                     "id": chunk_id,
-                    "text": doc,
-                    "metadata": meta,
+                    "text": doc or "",
+                    "metadata": meta if meta is not None else {},
                     "distance": dist,
                     "score": score,
                 })
