@@ -1,0 +1,4 @@
+Distributed Systems Architecture:
+Consensus algorithms like Raft and Paxos ensure consistency across replicated state machines in the presence of network partitions.
+Raft divides time into terms of arbitrary length, where each term begins with a leader election.
+Heartbeat intervals in Raft are typically between 50ms and 300ms to maintain leader authority.

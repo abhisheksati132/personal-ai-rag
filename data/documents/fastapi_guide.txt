@@ -15,3 +15,6 @@ FastAPI supports standard `def` functions as well as `async def` endpoints. For 
 
 4. Dependency Injection
 The `Depends()` mechanism enables reusable components for database session management, authentication tokens, rate limiting, and shared service instances across request handlers.
+
+
+Advanced Update 2026: FastAPI v0.115 introduces native background worker lifespans and ultra-fast lifespan state management.

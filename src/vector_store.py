@@ -37,11 +37,16 @@ class ChromaVectorStore:
         self.persist_dir.mkdir(parents=True, exist_ok=True)
         self.collection_name = collection_name or settings.COLLECTION_NAME
 
-        self.client = chromadb.PersistentClient(
+    def _get_client(self) -> chromadb.PersistentClient:
+        return chromadb.PersistentClient(
             path=str(self.persist_dir),
             settings=ChromaSettings(anonymized_telemetry=False, is_persistent=True),
         )
-        self.collection = self.client.get_or_create_collection(
+
+    @property
+    def collection(self):
+        """Get fresh collection handle from client."""
+        return self._get_client().get_or_create_collection(
             name=self.collection_name,
             metadata={"hnsw:space": "cosine"},
         )
@@ -133,8 +138,12 @@ class ChromaVectorStore:
 
     def clear(self) -> None:
         """Reset the collection."""
-        self.client.delete_collection(self.collection_name)
-        self.collection = self.client.get_or_create_collection(
+        client = self._get_client()
+        try:
+            client.delete_collection(self.collection_name)
+        except Exception:
+            pass
+        client.get_or_create_collection(
             name=self.collection_name,
             metadata={"hnsw:space": "cosine"},
         )
