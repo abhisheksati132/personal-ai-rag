@@ -7,6 +7,8 @@ export interface SourceInfo {
 export interface QueryResponse {
   answer: string;
   sources: SourceInfo[];
+  provider?: 'local' | 'cloud';
+  model?: string;
 }
 
 export interface IndexedFile {
@@ -24,8 +26,10 @@ export interface IndexedFile {
 export interface HealthResponse {
   status: string;
   ollama_connected: boolean;
+  groq_configured?: boolean;
   embedding_model: string;
   llm_model: string;
+  groq_model?: string;
   indexed_files: number;
   total_vectors: number;
 }
@@ -44,7 +48,10 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
   sources?: SourceInfo[];
+  provider?: 'local' | 'cloud';
+  model?: string;
   timestamp: number;
   isError?: boolean;
   errorMessage?: string;
 }
+

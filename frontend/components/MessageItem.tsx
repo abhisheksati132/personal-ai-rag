@@ -19,6 +19,14 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
       textLower.includes("cannot find information") ||
       textLower.includes("no information found"));
 
+  const isCloud = message.provider === 'cloud';
+  const modelName = message.model || (isCloud ? 'llama-3.3-70b-versatile' : 'llama3.2');
+  const isMissingApiKeyError =
+    message.isError &&
+    message.errorMessage &&
+    (message.errorMessage.includes('GROQ_API_KEY') ||
+      message.errorMessage.toLowerCase().includes('groq api key not configured') ||
+      message.errorMessage.toLowerCase().includes('invalid groq api key'));
 
   return (
     <div
@@ -33,9 +41,9 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
             : 'bg-card border border-moss/20 rounded-lg p-6 text-ink shadow-2xs'
         }`}
       >
-        {/* Header / Role tag */}
-        <div className="flex items-center justify-between mb-2.5">
-          <div className="flex items-center gap-2">
+        {/* Header / Role tag & Provenance */}
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2 flex-wrap">
             <span
               className={`font-mono text-[10.5px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded ${
                 isUser
@@ -45,13 +53,29 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
             >
               {isUser ? 'You' : 'Brain Archive'}
             </span>
+
+            {/* Provider Provenance Badge */}
+            {!isUser && !message.isError && (
+              <span
+                className={`font-mono text-[10.5px] px-2 py-0.5 rounded border flex items-center gap-1 ${
+                  isCloud
+                    ? 'bg-paper text-moss border-moss/30 font-medium'
+                    : 'bg-paper text-stone border-moss/15'
+                }`}
+              >
+                <span>{isCloud ? '☁️ Groq Cloud' : '⚡ Local Ollama'}</span>
+                <span className="text-[9px] text-stone/80">({modelName})</span>
+              </span>
+            )}
+
             {isFallback && (
               <span className="font-mono text-[10.5px] text-stone bg-paper px-2 py-0.5 rounded border border-moss/15">
                 No Context Found
               </span>
             )}
           </div>
-          <span className="font-mono text-[10.5px] text-stone">
+
+          <span className="font-mono text-[10.5px] text-stone flex-shrink-0">
             {new Date(message.timestamp).toLocaleTimeString([], {
               hour: '2-digit',
               minute: '2-digit',
@@ -59,14 +83,33 @@ export const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
           </span>
         </div>
 
-
         {/* Message Body */}
         {message.isError ? (
-          <div className="p-3 bg-red-50/80 border border-red-200 rounded text-red-800 text-sm font-sans">
-            <p className="font-semibold text-xs mb-1 font-mono uppercase tracking-wide">
-              Query Error
+          <div className="p-4 bg-paper border border-moss/20 rounded-md text-ink text-sm font-sans space-y-2.5">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-amber-600" />
+              <p className="font-semibold text-xs font-mono uppercase tracking-wide text-ink">
+                {isMissingApiKeyError ? 'Cloud Fallback Not Configured' : 'Query Notice'}
+              </p>
+            </div>
+
+            <p className="text-xs text-stone leading-relaxed">
+              {message.errorMessage || message.text}
             </p>
-            <p>{message.errorMessage || message.text}</p>
+
+            {isMissingApiKeyError && (
+              <div className="pt-2 border-t border-moss/15 flex items-center justify-between font-mono text-[11px]">
+                <span className="text-stone">Get a free key:</span>
+                <a
+                  href="https://console.groq.com/keys"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-pine font-semibold underline hover:text-pine/80"
+                >
+                  console.groq.com/keys ↗
+                </a>
+              </div>
+            )}
           </div>
         ) : (
           <div className="text-sm leading-relaxed whitespace-pre-wrap font-sans text-ink space-y-2">

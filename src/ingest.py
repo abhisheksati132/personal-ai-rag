@@ -30,6 +30,17 @@ logger = logging.getLogger(__name__)
 console = Console(force_terminal=True, highlight=False)
 
 
+IGNORED_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", ".idea", ".vscode", "node_modules", "rag", "chroma_db", "data"}
+
+
+def is_ignored_path(path: Path) -> bool:
+    """Check if any parent part is in IGNORED_DIRS or starts with dot."""
+    for part in path.parts:
+        if part in IGNORED_DIRS or (part.startswith(".") and part != "."):
+            return True
+    return False
+
+
 @dataclass
 class IngestionStats:
     total_scanned: int = 0
@@ -69,6 +80,9 @@ class IngestionPipeline:
         file_path = Path(file_path).resolve()
         if not file_path.exists():
             return False, 0, f"File does not exist: {file_path}"
+
+        if is_ignored_path(file_path):
+            return False, 0, "Ignored directory or hidden file"
 
         if not ExtractorFactory.supports(file_path):
             return False, 0, f"Unsupported file type: {file_path.suffix}"
@@ -147,8 +161,11 @@ class IngestionPipeline:
         pattern = "**/*" if recursive else "*"
         disk_files: set[Path] = set()
         for p in dir_path.glob(pattern):
+            if is_ignored_path(p):
+                continue
             if p.is_file() and ExtractorFactory.supports(p):
                 disk_files.add(p.resolve())
+
 
         stats.total_scanned = len(disk_files)
 

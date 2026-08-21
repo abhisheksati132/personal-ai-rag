@@ -51,7 +51,8 @@ console = Console(force_terminal=True, highlight=False)
 # Ignored filename prefixes and patterns (temporary, lock, or swap files)
 IGNORED_PREFIXES = (".", "~", "#", ".#", ".~")
 IGNORED_SUFFIXES = (".tmp", ".temp", ".swp", ".swo", ".crdownload", ".part", ".bak")
-IGNORED_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", ".idea", ".vscode"}
+IGNORED_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", ".idea", ".vscode", "node_modules", "rag", "chroma_db", "data"}
+
 
 
 def is_supported_document(file_path: Path) -> bool:
@@ -312,8 +313,9 @@ class DocumentWatcher:
             max_settle_retries=self.max_settle_retries,
             on_event_callback=self.on_event_callback,
         )
-        self.observer = PollingObserver(timeout=1.0)
+        self.observer = Observer()
         self._is_running = False
+
 
 
     def start(self) -> None:

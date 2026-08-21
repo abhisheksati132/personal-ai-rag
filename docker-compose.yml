@@ -41,11 +41,17 @@ services:
       - BRAIN_EMBEDDING_MODEL=${BRAIN_EMBEDDING_MODEL:-nomic-embed-text}
       - BRAIN_LLM_TEMPERATURE=${BRAIN_LLM_TEMPERATURE:-0.1}
       - BRAIN_SIMILARITY_THRESHOLD=${BRAIN_SIMILARITY_THRESHOLD:-0.40}
-      - BRAIN_TOP_K=${BRAIN_TOP_K:-5}
+      - BRAIN_TOP_K=${BRAIN_TOP_K:-8}
       - BRAIN_CHUNK_SIZE=${BRAIN_CHUNK_SIZE:-1000}
+
+
       - BRAIN_CHUNK_OVERLAP=${BRAIN_CHUNK_OVERLAP:-150}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - BRAIN_GROQ_MODEL=${BRAIN_GROQ_MODEL:-llama-3.3-70b-versatile}
+      - BRAIN_GROQ_BASE_URL=${BRAIN_GROQ_BASE_URL:-https://api.groq.com/openai/v1}
     volumes:
-      - ./data/documents:/app/data/documents
+
+      - ${BRAIN_DOCUMENTS_DIR:-./data/documents}:/app/data/documents
       - ./data/chroma_db:/app/data/chroma_db
       - ./data/brain.db:/app/data/brain.db
     depends_on:
@@ -80,9 +86,10 @@ services:
       - BRAIN_CHUNK_SIZE=${BRAIN_CHUNK_SIZE:-1000}
       - BRAIN_CHUNK_OVERLAP=${BRAIN_CHUNK_OVERLAP:-150}
     volumes:
-      - ./data/documents:/app/data/documents
+      - ${BRAIN_DOCUMENTS_DIR:-./data/documents}:/app/data/documents
       - ./data/chroma_db:/app/data/chroma_db
       - ./data/brain.db:/app/data/brain.db
+
     depends_on:
       backend:
         condition: service_started

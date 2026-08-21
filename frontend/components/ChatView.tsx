@@ -19,6 +19,7 @@ const SAMPLE_QUESTIONS = [
 export const ChatView: React.FC<ChatViewProps> = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputQuestion, setInputQuestion] = useState('');
+  const [provider, setProvider] = useState<'local' | 'cloud'>('local');
   const [isLoading, setIsLoading] = useState(false);
   const [generalError, setGeneralError] = useState<string | null>(null);
 
@@ -51,13 +52,15 @@ export const ChatView: React.FC<ChatViewProps> = () => {
     setIsLoading(true);
 
     try {
-      const response = await postQuery(query);
+      const response = await postQuery(query, undefined, undefined, provider);
 
       const assistantMessage: ChatMessage = {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
         text: response.answer,
         sources: response.sources,
+        provider: response.provider || provider,
+        model: response.model,
         timestamp: Date.now(),
       };
 
@@ -72,6 +75,7 @@ export const ChatView: React.FC<ChatViewProps> = () => {
         id: `error-${Date.now()}`,
         role: 'assistant',
         text: 'Failed to retrieve answer from knowledge base.',
+        provider: provider,
         timestamp: Date.now(),
         isError: true,
         errorMessage: errorMsg,
@@ -97,7 +101,6 @@ export const ChatView: React.FC<ChatViewProps> = () => {
 
   return (
     <div className="flex flex-col h-full bg-paper relative">
-
       {/* Scrollable Message Thread */}
       <div className="flex-1 overflow-y-auto px-8 py-8">
         <div className="max-w-5xl mx-auto w-full space-y-6">
@@ -115,7 +118,7 @@ export const ChatView: React.FC<ChatViewProps> = () => {
                   Personal Knowledge Archive
                 </h2>
                 <p className="text-sm text-stone max-w-lg mx-auto font-sans leading-relaxed">
-                  Ask natural language questions across your indexed course materials and documents. Answers are strictly grounded in retrieved vector chunks with exact citations.
+                  Ask natural language questions across your indexed documents. Answers are strictly grounded in retrieved vector chunks with exact citations.
                 </p>
               </div>
 
@@ -153,11 +156,15 @@ export const ChatView: React.FC<ChatViewProps> = () => {
                 <div className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-pine animate-pulse" />
                   <span className="font-mono text-xs text-pine font-semibold uppercase tracking-wider">
-                    Retrieving Chunks & Synthesizing...
+                    {provider === 'cloud'
+                      ? 'Retrieving Chunks & Synthesizing via Groq Cloud...'
+                      : 'Retrieving Chunks & Synthesizing via Local Ollama...'}
                   </span>
                 </div>
                 <p className="font-sans text-xs text-stone">
-                  Searching local ChromaDB vectors and evaluating similarity thresholds...
+                  {provider === 'cloud'
+                    ? 'Searching local ChromaDB vectors and generating grounded response via Groq llama-3.3-70b...'
+                    : 'Searching local ChromaDB vectors and generating grounded response via local Ollama...'}
                 </p>
               </div>
             </div>
@@ -169,38 +176,86 @@ export const ChatView: React.FC<ChatViewProps> = () => {
 
       {/* Pinned Bottom Input Bar */}
       <div className="border-t border-moss/20 bg-card p-4 px-8">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            handleSubmit();
-          }}
-          className="max-w-5xl mx-auto flex items-center gap-3"
-        >
-          <input
-            ref={inputRef}
-            type="text"
-            value={inputQuestion}
-            onChange={(e) => setInputQuestion(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask a question across your indexed documents..."
-            disabled={isLoading}
-            className="flex-1 bg-paper border border-moss/25 focus:border-pine focus:outline-none rounded-md px-4 py-2.5 text-sm text-ink placeholder:text-stone font-sans transition-colors disabled:opacity-50"
-          />
-          <button
-            type="submit"
-            disabled={isLoading || !inputQuestion.trim()}
-            className="px-5 py-2.5 bg-pine hover:bg-pine/90 disabled:opacity-40 disabled:cursor-not-allowed text-white font-mono text-xs font-semibold rounded-md transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
+        <div className="max-w-5xl mx-auto space-y-3">
+          {/* Provider Selection Controls */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[11px] uppercase tracking-wider text-stone font-medium">
+                Synthesis Engine:
+              </span>
+              <div className="inline-flex rounded-md p-0.5 bg-paper border border-moss/20 font-mono text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => setProvider('local')}
+                  className={`px-3 py-1 rounded transition-colors cursor-pointer flex items-center gap-1.5 ${
+                    provider === 'local'
+                      ? 'bg-card text-pine font-bold border border-moss/20 shadow-2xs'
+                      : 'text-stone hover:text-ink'
+                  }`}
+                >
+                  <span>⚡</span>
+                  <span>Local (Ollama)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProvider('cloud')}
+                  className={`px-3 py-1 rounded transition-colors cursor-pointer flex items-center gap-1.5 ${
+                    provider === 'cloud'
+                      ? 'bg-card text-pine font-bold border border-moss/20 shadow-2xs'
+                      : 'text-stone hover:text-ink'
+                  }`}
+                >
+                  <span>☁️</span>
+                  <span>Cloud (Groq)</span>
+                </button>
+              </div>
+            </div>
+
+            <span className="font-mono text-[11px] text-stone">
+              {provider === 'cloud'
+                ? '☁️ Groq llama-3.3-70b-versatile (Free Cloud Tier)'
+                : '🔒 100% Local In-Process Retrieval'}
+            </span>
+          </div>
+
+          {/* Form Input Bar */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSubmit();
+            }}
+            className="flex items-center gap-3"
           >
-            <span>Ask</span>
-            <span className="text-[10px]">↵</span>
-          </button>
-        </form>
-        <div className="max-w-5xl mx-auto mt-2 flex items-center justify-between text-[11px] font-mono text-stone">
-          <span>Grounded in local ChromaDB vectors</span>
-          <span>Zero cloud telemetry</span>
+            <input
+              ref={inputRef}
+              type="text"
+              value={inputQuestion}
+              onChange={(e) => setInputQuestion(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={
+                provider === 'cloud'
+                  ? 'Ask a question (synthesizing via Groq Cloud)...'
+                  : 'Ask a question (synthesizing via Local Ollama)...'
+              }
+              disabled={isLoading}
+              className="flex-1 bg-paper border border-moss/25 focus:border-pine focus:outline-none rounded-md px-4 py-2.5 text-sm text-ink placeholder:text-stone font-sans transition-colors disabled:opacity-50"
+            />
+            <button
+              type="submit"
+              disabled={isLoading || !inputQuestion.trim()}
+              className="px-5 py-2.5 bg-pine hover:bg-pine/90 disabled:opacity-40 disabled:cursor-not-allowed text-white font-mono text-xs font-semibold rounded-md transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
+            >
+              <span>Ask</span>
+              <span className="text-[10px]">↵</span>
+            </button>
+          </form>
+
+          <div className="flex items-center justify-between text-[11px] font-mono text-stone">
+            <span>Grounded in local ChromaDB vectors</span>
+            <span>{provider === 'cloud' ? 'Requires GROQ_API_KEY in .env' : 'Zero cloud telemetry'}</span>
+          </div>
         </div>
       </div>
     </div>
   );
 };
-

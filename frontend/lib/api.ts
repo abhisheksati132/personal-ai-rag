@@ -80,7 +80,8 @@ export async function fetchFiles(): Promise<IndexedFile[]> {
 export async function postQuery(
   question: string,
   top_k?: number,
-  min_score?: number
+  min_score?: number,
+  provider: 'local' | 'cloud' = 'local'
 ): Promise<QueryResponse> {
   try {
     const res = await fetch(`${API_BASE}/query`, {
@@ -89,7 +90,7 @@ export async function postQuery(
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
-      body: JSON.stringify({ question, top_k, min_score }),
+      body: JSON.stringify({ question, top_k, min_score, provider }),
     });
 
     if (!res.ok) {
@@ -101,10 +102,17 @@ export async function postQuery(
         detail = res.statusText || detail;
       }
 
-      if (res.status === 503) {
-        throw new ApiError(`Ollama service unavailable: ${detail}`, 503);
+      if (res.status === 400 && provider === 'cloud') {
+        throw new ApiError(
+          detail || 'Groq Cloud API key is not configured. Please set GROQ_API_KEY in your .env file.',
+          400
+        );
+      } else if (res.status === 429) {
+        throw new ApiError(`Groq Cloud Rate Limit: ${detail}`, 429);
+      } else if (res.status === 503) {
+        throw new ApiError(`LLM service unavailable: ${detail}`, 503);
       } else if (res.status === 502) {
-        throw new ApiError(`Ollama model error: ${detail}`, 502);
+        throw new ApiError(`LLM model error: ${detail}`, 502);
       } else {
         throw new ApiError(detail, res.status);
       }
@@ -120,3 +128,4 @@ export async function postQuery(
     );
   }
 }
+

@@ -18,9 +18,16 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "llama3.2"
     LLM_TEMPERATURE: float = 0.1
 
+    # Groq Cloud LLM Settings
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+    GROQ_TIMEOUT: float = 30.0
+
     # Retrieval Configuration
     SIMILARITY_THRESHOLD: float = 0.40
-    TOP_K: int = 5
+    TOP_K: int = 8
+
 
     # Chunking Configuration
     CHUNK_SIZE: int = 1000
@@ -34,6 +41,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def resolve_paths(self) -> "Settings":
+        import os
         if self.DATA_DIR is None:
             self.DATA_DIR = self.BASE_DIR / "data"
         if self.DOCUMENTS_DIR is None:
@@ -42,7 +50,10 @@ class Settings(BaseSettings):
             self.CHROMA_DIR = self.DATA_DIR / "chroma_db"
         if self.SQLITE_DB_PATH is None:
             self.SQLITE_DB_PATH = self.DATA_DIR / "brain.db"
+        if not self.GROQ_API_KEY:
+            self.GROQ_API_KEY = os.getenv("GROQ_API_KEY") or None
         return self
+
 
     def ensure_directories(self) -> None:
         """Create necessary directories if they don't exist."""
