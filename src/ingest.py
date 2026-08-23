@@ -18,8 +18,10 @@ from rich.console import Console
 # pyrefly: ignore [missing-import]
 from rich.table import Table
 
-from src.chunker import RecursiveChunker
+from src.bookmarks import BookmarkContentFetcher, BookmarkItem, ChromeBookmarkParser
+from src.chunker import Chunk, RecursiveChunker
 from src.config import settings
+
 from src.db import Database
 from src.embeddings import BaseEmbedder, OllamaEmbedder, get_embedder
 from src.extractors.factory import ExtractorFactory
@@ -28,6 +30,7 @@ from src.vector_store import ChromaVectorStore
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 console = Console(force_terminal=True, highlight=False)
+
 
 
 IGNORED_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", ".idea", ".vscode", "node_modules", "rag", "chroma_db", "data"}
@@ -70,6 +73,9 @@ class IngestionPipeline:
             chunk_size=chunk_size or settings.CHUNK_SIZE,
             chunk_overlap=chunk_overlap or settings.CHUNK_OVERLAP,
         )
+        self.bookmark_fetcher = BookmarkContentFetcher(
+            timeout=settings.BOOKMARK_FETCH_TIMEOUT
+        )
 
     def ingest_file(self, file_path: Path, force: bool = False) -> tuple[bool, int, Optional[str]]:
         """Ingest a single file.
@@ -98,34 +104,32 @@ class IngestionPipeline:
             doc = extractor.extract(file_path)
 
             if doc.is_empty:
-                logger.warning(f"File is empty or contains no extractable text: {file_path.name}")
-                self.db.record_failure(file_path, "File contains no extractable text")
-                return False, 0, "Empty document"
+                logger.warning(f"File has no extractable text: {file_path.name}")
+                self.db.record_failure(file_path, "No extractable text found")
+                return False, 0, "No extractable text"
 
             # 2. Chunk text
             base_meta = {
                 **doc.metadata,
+                "source_type": "file",
                 "source": str(file_path),
                 "file_name": file_path.name,
                 "file_hash": file_hash,
             }
             chunks = self.chunker.chunk_text(doc.text, base_metadata=base_meta)
-
             if not chunks:
-                self.db.record_failure(file_path, "Failed to produce any text chunks")
-                return False, 0, "No chunks generated"
+                self.db.record_failure(file_path, "Failed to produce chunks")
+                return False, 0, "Failed to produce chunks"
 
-            # 3. Clean up any prior vectors for this source
-            self.vector_store.delete_by_source(str(file_path))
-
-            # 4. Generate embeddings
+            # 3. Generate embeddings
             texts = [c.text for c in chunks]
             embeddings = self.embedder.embed_documents(texts)
 
-            # 5. Store in ChromaDB
+            # 4. Atomically delete old vectors and add new ones
+            self.vector_store.delete_by_source(str(file_path))
             self.vector_store.add_chunks(chunks, embeddings)
 
-            # 6. Record success in SQLite
+            # 5. Record success in SQLite
             self.db.record_success(
                 file_path=file_path,
                 file_hash=file_hash,
@@ -142,6 +146,129 @@ class IngestionPipeline:
             logger.error(f"Failed to ingest '{file_path.name}': {error_msg}", exc_info=True)
             self.db.record_failure(file_path, error_msg)
             return False, 0, error_msg
+
+    def ingest_bookmark(self, bookmark: BookmarkItem, force: bool = False) -> tuple[bool, int, Optional[str]]:
+        """Fetch, extract, chunk, embed, and index a single Chrome bookmark URL.
+        
+        Returns:
+            Tuple of (indexed: bool, chunks_created: int, error_message: Optional[str])
+        """
+        existing = self.db.get_bookmark(bookmark.url)
+        if existing and existing.get("status") == "indexed" and not force:
+            logger.debug(f"Bookmark already indexed: {bookmark.title} ({bookmark.url})")
+            return False, 0, None
+
+        logger.info(f"Fetching bookmark content: '{bookmark.title}' -> {bookmark.url}")
+        result = self.bookmark_fetcher.fetch(bookmark)
+
+        if not result.is_success:
+            err = result.error_message or "Unknown fetch error"
+            logger.warning(f"Failed bookmark fetch for '{bookmark.title}' ({bookmark.url}): {err}")
+            self.db.record_bookmark_failure(
+                bookmark_id=bookmark.id,
+                title=bookmark.title,
+                url=bookmark.url,
+                folder=bookmark.folder,
+                error_message=err,
+            )
+            return False, 0, err
+
+        try:
+            # 1. Chunk extracted text
+            base_meta = {
+                "source_type": "bookmark",
+                "title": bookmark.title,
+                "url": bookmark.url,
+                "folder": bookmark.folder,
+                "source": bookmark.url,
+                "file_name": bookmark.title,
+                "content_type": result.content_type,
+            }
+            chunks = self.chunker.chunk_text(result.text, base_metadata=base_meta)
+            if not chunks:
+                self.db.record_bookmark_failure(
+                    bookmark_id=bookmark.id,
+                    title=bookmark.title,
+                    url=bookmark.url,
+                    folder=bookmark.folder,
+                    error_message="Failed to produce text chunks",
+                )
+                return False, 0, "Failed to produce text chunks"
+
+            # 2. Generate embeddings
+            texts = [c.text for c in chunks]
+            embeddings = self.embedder.embed_documents(texts)
+
+            # 3. Atomically delete previous vectors for this URL and add new ones
+            self.vector_store.delete_by_source(bookmark.url)
+            self.vector_store.add_chunks(chunks, embeddings)
+
+            # 4. Record success in SQLite
+            self.db.record_bookmark_success(
+                bookmark_id=bookmark.id,
+                title=bookmark.title,
+                url=bookmark.url,
+                folder=bookmark.folder,
+                content_hash=result.content_hash,
+                chunk_count=len(chunks),
+            )
+
+            logger.info(
+                f"Successfully indexed bookmark '{bookmark.title}' "
+                f"({len(chunks)} chunks, {len(result.text)} chars)"
+            )
+            return True, len(chunks), None
+
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Error indexing bookmark '{bookmark.title}' ({bookmark.url}): {error_msg}", exc_info=True)
+            self.db.record_bookmark_failure(
+                bookmark_id=bookmark.id,
+                title=bookmark.title,
+                url=bookmark.url,
+                folder=bookmark.folder,
+                error_message=error_msg,
+            )
+            return False, 0, error_msg
+
+    def ingest_bookmarks(
+        self,
+        bookmarks: list[BookmarkItem],
+        force: bool = False,
+        delay: Optional[float] = None,
+    ) -> IngestionStats:
+        """Ingest a batch of Chrome bookmarks with polite rate limiting and progress logging."""
+        stats = IngestionStats()
+        stats.total_scanned = len(bookmarks)
+        start_time = time.time()
+        request_delay = delay if delay is not None else settings.BOOKMARK_REQUEST_DELAY
+
+        logger.info(f"Starting batch bookmark ingestion for {len(bookmarks)} bookmarks...")
+
+        for idx, bm in enumerate(bookmarks, 1):
+            logger.info(f"Processing bookmark {idx}/{len(bookmarks)}: '{bm.title}' ({bm.folder})")
+            indexed, chunk_cnt, error = self.ingest_bookmark(bm, force=force)
+
+            if indexed:
+                stats.indexed += 1
+                stats.chunks_created += chunk_cnt
+            elif error:
+                stats.failed += 1
+            else:
+                stats.skipped += 1
+
+            if request_delay > 0 and idx < len(bookmarks):
+                time.sleep(request_delay)
+
+        stats.elapsed_time = time.time() - start_time
+        return stats
+
+    def delete_bookmark(self, bookmark_url: str) -> None:
+        """Purge all vector chunks and SQLite tracking for a removed bookmark URL."""
+        logger.info(f"Purging deleted bookmark: {bookmark_url}")
+        self.vector_store.delete_by_source(bookmark_url)
+        self.db.remove_bookmark(bookmark_url)
 
     def sync_directory(
         self,
@@ -198,19 +325,22 @@ class IngestionPipeline:
 
 
 def print_stats_table(stats_dict: dict) -> None:
-    """Print nicely formatted SQLite stats."""
-    table = Table(title="Personal AI Brain - Indexing Status", header_style="bold cyan")
-    table.add_column("Metric", style="bold white")
-    table.add_column("Value", style="green")
+    """Print nicely formatted SQLite stats for both local files and bookmarks."""
+    table = Table(title="Personal AI Brain - Knowledge Base Status", header_style="bold cyan")
+    table.add_column("Category", style="bold white")
+    table.add_column("Count / Value", style="green")
 
-    table.add_row("Total Tracked Files", str(stats_dict.get("total_files", 0)))
-    table.add_row("Successfully Indexed", str(stats_dict.get("indexed_files", 0)))
+    table.add_row("Tracked Files", str(stats_dict.get("total_files", 0)))
+    table.add_row("Indexed Files", str(stats_dict.get("indexed_files", 0)))
     table.add_row("Failed Files", str(stats_dict.get("failed_files", 0)))
+    table.add_row("Tracked Bookmarks", str(stats_dict.get("total_bookmarks", 0)))
+    table.add_row("Indexed Bookmarks", str(stats_dict.get("indexed_bookmarks", 0)))
+    table.add_row("Failed Bookmarks", str(stats_dict.get("failed_bookmarks", 0)))
     table.add_row("Total Vector Chunks", str(stats_dict.get("total_chunks", 0)))
     
     total_bytes = stats_dict.get("total_bytes", 0)
     size_mb = f"{total_bytes / (1024 * 1024):.2f} MB"
-    table.add_row("Total Indexed Size", size_mb)
+    table.add_row("Local Files Size", size_mb)
 
     last_indexed = stats_dict.get("last_indexed_at")
     if last_indexed:
@@ -218,6 +348,7 @@ def print_stats_table(stats_dict: dict) -> None:
         table.add_row("Last Indexed At", time_str)
 
     console.print(table)
+
 
 
 def peek_file(file_path: Path, max_chars: int = 2000) -> None:
@@ -314,13 +445,15 @@ def query_store(query_text: str, top_k: int = 5, use_mock: bool = False) -> None
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Personal AI Brain - Document Ingestion CLI")
+    parser = argparse.ArgumentParser(description="Personal AI Brain - Knowledge Ingestion CLI")
     parser.add_argument("--dir", type=str, default=str(settings.DOCUMENTS_DIR), help="Directory to scan and index")
     parser.add_argument("--file", type=str, help="Index a specific single file")
+    parser.add_argument("--bookmarks", action="store_true", help="Ingest Chrome bookmarks")
+    parser.add_argument("--bookmark-file", type=str, help="Path to Chrome Bookmarks or AccountBookmarks JSON file")
     parser.add_argument("--peek", type=str, help="Peek at raw extracted text and metadata for a file without indexing")
     parser.add_argument("--peek-chunks", type=str, help="Inspect generated chunks and boundary splits for a file")
     parser.add_argument("--query", type=str, help="Run a test query against indexed chunks in ChromaDB")
-    parser.add_argument("--force", action="store_true", help="Force re-indexing of unchanged files")
+    parser.add_argument("--force", action="store_true", help="Force re-indexing of unchanged files and bookmarks")
     parser.add_argument("--mock-embeddings", action="store_true", help="Use mock embedder (for testing without Ollama)")
     parser.add_argument("--stats", action="store_true", help="Display current indexing statistics and exit")
     parser.add_argument("--clear", action="store_true", help="Clear all vectors and tracking data")
@@ -347,6 +480,8 @@ def main():
         vector_store.clear()
         for f in db.list_all_files():
             db.remove_file(f["file_path"])
+        for b in db.list_all_bookmarks():
+            db.remove_bookmark(b["url"])
         console.print("[bold green]All vector data and SQLite records cleared successfully.[/bold green]")
         return
 
@@ -364,7 +499,28 @@ def main():
 
     pipeline = IngestionPipeline(db=db, vector_store=vector_store, embedder=embedder)
 
-    if args.file:
+    if args.bookmarks or args.bookmark_file:
+        custom_file = Path(args.bookmark_file) if args.bookmark_file else None
+        bookmarks = ChromeBookmarkParser.discover_all_bookmarks(custom_path=custom_file)
+        if not bookmarks:
+            console.print("[bold yellow]No Chrome bookmarks found or bookmarks file does not exist.[/bold yellow]")
+        else:
+            console.print(f"[bold cyan]Discovered {len(bookmarks)} Chrome bookmarks. Beginning ingestion...[/bold cyan]")
+            stats = pipeline.ingest_bookmarks(bookmarks, force=args.force)
+
+            summary_table = Table(title="Bookmark Ingestion Summary", header_style="bold magenta")
+            summary_table.add_column("Category", style="bold")
+            summary_table.add_column("Count", style="cyan")
+
+            summary_table.add_row("Bookmarks Discovered", str(stats.total_scanned))
+            summary_table.add_row("Bookmarks Indexed", str(stats.indexed))
+            summary_table.add_row("Bookmarks Skipped", str(stats.skipped))
+            summary_table.add_row("Bookmarks Failed", str(stats.failed))
+            summary_table.add_row("Chunks Created", str(stats.chunks_created))
+            summary_table.add_row("Elapsed Time", f"{stats.elapsed_time:.2f}s")
+            console.print(summary_table)
+
+    elif args.file:
         file_path = Path(args.file)
         console.print(f"[bold blue]Indexing file:[/bold blue] {file_path}")
         indexed, chunks, err = pipeline.ingest_file(file_path, force=args.force)
@@ -398,3 +554,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

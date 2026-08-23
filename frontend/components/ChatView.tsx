@@ -8,6 +8,9 @@ import { ErrorBanner } from './ErrorBanner';
 
 interface ChatViewProps {
   onIndexedFilesCountChange?: () => void;
+  activeSessionId?: string | null;
+  onSessionCreated?: (sessionId: string) => void;
+  onSessionsUpdated?: () => void;
 }
 
 const SAMPLE_QUESTIONS = [
@@ -16,7 +19,12 @@ const SAMPLE_QUESTIONS = [
   'What is the architecture and role of ChromaDB in this local RAG system?',
 ];
 
-export const ChatView: React.FC<ChatViewProps> = () => {
+export const ChatView: React.FC<ChatViewProps> = ({
+  onIndexedFilesCountChange,
+  activeSessionId = null,
+  onSessionCreated,
+  onSessionsUpdated,
+}) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputQuestion, setInputQuestion] = useState('');
   const [provider, setProvider] = useState<'local' | 'cloud'>('local');
@@ -30,6 +38,45 @@ export const ChatView: React.FC<ChatViewProps> = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  // Load session messages when activeSessionId changes
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadSessionHistory = async () => {
+      if (!activeSessionId) {
+        setMessages([]);
+        return;
+      }
+
+      try {
+        const { fetchSession } = await import('@/lib/api');
+        const sessionData = await fetchSession(activeSessionId);
+        if (!isCancelled && sessionData && sessionData.messages) {
+          const formattedMessages: ChatMessage[] = sessionData.messages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            text: m.content,
+            sources: m.sources,
+            provider: m.provider,
+            model: m.model,
+            timestamp: m.created_at * 1000,
+          }));
+          setMessages(formattedMessages);
+        }
+      } catch (err: unknown) {
+        if (!isCancelled) {
+          console.error('Failed to load session history:', err);
+        }
+      }
+    };
+
+    loadSessionHistory();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeSessionId]);
+
   useEffect(() => {
     scrollToBottom();
   }, [messages, isLoading]);
@@ -40,6 +87,12 @@ export const ChatView: React.FC<ChatViewProps> = () => {
 
     setGeneralError(null);
     setInputQuestion('');
+
+    const targetSessionId =
+      activeSessionId ||
+      (typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `session-${Date.now()}`);
 
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
@@ -52,7 +105,7 @@ export const ChatView: React.FC<ChatViewProps> = () => {
     setIsLoading(true);
 
     try {
-      const response = await postQuery(query, undefined, undefined, provider);
+      const response = await postQuery(query, undefined, undefined, provider, targetSessionId);
 
       const assistantMessage: ChatMessage = {
         id: `assistant-${Date.now()}`,
@@ -65,6 +118,13 @@ export const ChatView: React.FC<ChatViewProps> = () => {
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
+
+      if (!activeSessionId && onSessionCreated) {
+        onSessionCreated(response.session_id || targetSessionId);
+      }
+      if (onSessionsUpdated) {
+        onSessionsUpdated();
+      }
     } catch (err: unknown) {
       const isApiError = err instanceof ApiError;
       const errorMsg = isApiError
@@ -92,6 +152,7 @@ export const ChatView: React.FC<ChatViewProps> = () => {
     }
   };
 
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -100,9 +161,9 @@ export const ChatView: React.FC<ChatViewProps> = () => {
   };
 
   return (
-    <div className="flex flex-col h-full bg-paper relative">
+    <div className="flex-1 flex flex-col h-full min-h-0 bg-paper relative">
       {/* Scrollable Message Thread */}
-      <div className="flex-1 overflow-y-auto px-8 py-8">
+      <div className="flex-1 min-h-0 overflow-y-auto px-8 py-8">
         <div className="max-w-5xl mx-auto w-full space-y-6">
           {generalError && (
             <ErrorBanner

@@ -48,6 +48,7 @@ class QueryRequest(BaseModel):
         default="local",
         description="LLM provider to use for synthesis: 'local' (Ollama) or 'cloud' (Groq)",
     )
+    session_id: Optional[str] = Field(None, description="Optional conversation session ID to persist question and answer")
 
     @field_validator("question")
     @classmethod
@@ -59,9 +60,13 @@ class QueryRequest(BaseModel):
 
 
 class SourceInfo(BaseModel):
-    file: str = Field(..., description="Source file name")
+    file: str = Field(..., description="Source file name or bookmark title")
     chunk_index: int = Field(..., description="Position index of the chunk")
     score: float = Field(..., description="Cosine similarity score")
+    source_type: Optional[str] = Field(default="file", description="Type of knowledge source: 'file' or 'bookmark'")
+    title: Optional[str] = Field(None, description="Title of document or bookmark")
+    url: Optional[str] = Field(None, description="URL if source is a bookmark")
+    folder: Optional[str] = Field(None, description="Folder hierarchy of bookmark")
 
 
 class QueryResponse(BaseModel):
@@ -69,6 +74,7 @@ class QueryResponse(BaseModel):
     sources: list[SourceInfo] = Field(default_factory=list, description="Source documents cited in answer")
     provider: str = Field(default="local", description="LLM provider used for generation ('local' or 'cloud')")
     model: str = Field(default="llama3.2", description="Model name used for synthesis")
+    session_id: Optional[str] = Field(None, description="Session ID associated with this interaction")
 
 
 class HealthResponse(BaseModel):
@@ -79,7 +85,53 @@ class HealthResponse(BaseModel):
     llm_model: str
     groq_model: str
     indexed_files: int
+    indexed_bookmarks: int = 0
     total_vectors: int
+
+
+class SessionCreateRequest(BaseModel):
+    title: Optional[str] = Field(None, description="Optional custom title for the session")
+
+
+class SessionRenameRequest(BaseModel):
+    title: str = Field(..., min_length=1, description="New title for the session")
+
+    @field_validator("title")
+    @classmethod
+    def validate_title_not_blank(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("Title cannot be empty or only whitespace")
+        return stripped
+
+
+class SessionItem(BaseModel):
+    id: str
+    title: str
+    created_at: float
+    updated_at: float
+    message_count: int = 0
+    first_query_preview: Optional[str] = None
+
+
+class StoredMessage(BaseModel):
+    id: str
+    session_id: str
+    role: str
+    content: str
+    sources: list[SourceInfo] = Field(default_factory=list)
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    created_at: float
+
+
+class SessionDetailResponse(BaseModel):
+    id: str
+    title: str
+    created_at: float
+    updated_at: float
+    messages: list[StoredMessage] = Field(default_factory=list)
+
 
 
 # --- App Singletons ---
@@ -103,10 +155,19 @@ def query_documents(request: QueryRequest) -> QueryResponse:
     """Accepts a natural-language question, retrieves relevant chunks, and generates a grounded response.
     
     The user can select 'local' (Ollama default) or 'cloud' (Groq API) per query.
+    If session_id is provided, both question and answer are persisted to SQLite.
     """
     provider = request.provider or "local"
 
     try:
+        # If session_id provided, record user query message
+        if request.session_id:
+            _db.add_message(
+                session_id=request.session_id,
+                role="user",
+                content=request.question,
+            )
+
         # 1. Retrieve relevant chunks with threshold filtering (unchanged local retrieval)
         chunks = _retrieval_service.retrieve(
             query=request.question,
@@ -126,32 +187,60 @@ def query_documents(request: QueryRequest) -> QueryResponse:
         # 4. Short-circuit if no relevant context found (guarantees zero hallucination)
         if not has_context:
             logger.info(f"Zero chunks above threshold for query: '{request.question}'. Returning fallback.")
+            if request.session_id:
+                _db.add_message(
+                    session_id=request.session_id,
+                    role="assistant",
+                    content=FALLBACK_NO_INFO_RESPONSE,
+                    sources=[],
+                    provider=provider,
+                    model=active_model,
+                )
+
             return QueryResponse(
                 answer=FALLBACK_NO_INFO_RESPONSE,
                 sources=[],
                 provider=provider,
                 model=active_model,
+                session_id=request.session_id,
             )
 
         # 5. Generate grounded answer via selected provider
         llm = _llm_local if provider == "local" else get_llm(provider="cloud")
         answer = llm.generate(prompt=user_prompt, system_prompt=system_prompt)
 
-        # 6. Format sources
+        # 6. Format sources with metadata (files and bookmarks)
         sources = [
             SourceInfo(
-                file=c.file_name,
+                file=c.metadata.get("title") or c.file_name,
                 chunk_index=c.chunk_index,
                 score=round(c.score, 4),
+                source_type=c.metadata.get("source_type", "file"),
+                title=c.metadata.get("title") or c.file_name,
+                url=c.metadata.get("url"),
+                folder=c.metadata.get("folder"),
             )
             for c in chunks
         ]
+
+        # 7. If session_id provided, persist assistant answer
+        if request.session_id:
+            sources_dicts = [s.model_dump() for s in sources]
+            _db.add_message(
+                session_id=request.session_id,
+                role="assistant",
+                content=answer,
+                sources=sources_dicts,
+                provider=provider,
+                model=llm.model_name or active_model,
+            )
 
         return QueryResponse(
             answer=answer,
             sources=sources,
             provider=provider,
             model=llm.model_name or active_model,
+            session_id=request.session_id,
         )
 
     except GroqAuthError as e:
@@ -192,6 +281,86 @@ def query_documents(request: QueryRequest) -> QueryResponse:
         )
 
 
+# --- Session Management Endpoints ---
+
+@app.post(
+    "/sessions",
+    response_model=SessionItem,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new conversation session",
+)
+def create_session(request: Optional[SessionCreateRequest] = None) -> SessionItem:
+    """Create a new session, returning its ID and initial timestamp title."""
+    title = request.title if request else None
+    sess = _db.create_session(title=title)
+    return SessionItem(
+        id=sess["id"],
+        title=sess["title"],
+        created_at=sess["created_at"],
+        updated_at=sess["updated_at"],
+        message_count=0,
+        first_query_preview=None,
+    )
+
+
+@app.get(
+    "/sessions",
+    response_model=list[SessionItem],
+    summary="List all conversation sessions",
+)
+def list_sessions() -> list[SessionItem]:
+    """List all stored conversation sessions ordered most-recently-updated first."""
+    return [SessionItem(**s) for s in _db.list_sessions()]
+
+
+@app.get(
+    "/sessions/{session_id}",
+    response_model=SessionDetailResponse,
+    summary="Get full conversation history for a session",
+)
+def get_session(session_id: str) -> SessionDetailResponse:
+    """Retrieve full conversation history (ordered messages, citations, metadata) for a session."""
+    sess = _db.get_session(session_id)
+    if not sess:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session '{session_id}' not found",
+        )
+    return SessionDetailResponse(**sess)
+
+
+@app.patch(
+    "/sessions/{session_id}",
+    response_model=dict,
+    summary="Rename a conversation session",
+)
+def rename_session(session_id: str, request: SessionRenameRequest) -> dict:
+    """Update title of an existing conversation session."""
+    success = _db.rename_session(session_id, request.title)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session '{session_id}' not found",
+        )
+    return {"status": "success", "session_id": session_id, "title": request.title}
+
+
+@app.delete(
+    "/sessions/{session_id}",
+    response_model=dict,
+    summary="Delete a conversation session and all its messages",
+)
+def delete_session(session_id: str) -> dict:
+    """Delete a conversation session and its messages from the SQLite database."""
+    success = _db.delete_session(session_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session '{session_id}' not found",
+        )
+    return {"status": "success", "deleted_session_id": session_id}
+
+
 @app.get("/health", response_model=HealthResponse, summary="Check API and backend health")
 def health_check() -> HealthResponse:
     """Check health status of API, ChromaDB vector store, Ollama connection, and Groq configuration."""
@@ -207,6 +376,7 @@ def health_check() -> HealthResponse:
         llm_model=settings.LLM_MODEL,
         groq_model=settings.GROQ_MODEL,
         indexed_files=stats.get("indexed_files", 0),
+        indexed_bookmarks=stats.get("indexed_bookmarks", 0),
         total_vectors=stats.get("total_chunks", 0),
     )
 
@@ -217,7 +387,15 @@ def get_stats() -> dict:
     return _db.get_stats()
 
 
-@app.get("/files", summary="List all tracked and indexed files")
+@app.get("/files", summary="List all tracked and indexed files and bookmarks")
 def list_files() -> list[dict]:
-    """Return list of all indexed/tracked files with chunk count, file size, status, and indexed timestamp."""
-    return _db.list_all_files()
+    """Return list of all indexed knowledge items (files and bookmarks) with metadata and status."""
+    return _db.list_all_knowledge_items()
+
+
+@app.get("/bookmarks", summary="List all tracked Chrome bookmarks")
+def list_bookmarks() -> list[dict]:
+    """Return list of all indexed/tracked Chrome bookmarks."""
+    return _db.list_all_bookmarks()
+
+

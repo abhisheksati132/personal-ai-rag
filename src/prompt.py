@@ -7,14 +7,15 @@ logger = logging.getLogger(__name__)
 
 FALLBACK_NO_INFO_RESPONSE = "I don't have information on that in your indexed files."
 
-SYSTEM_PROMPT = """You are a precise, grounded AI assistant that answers questions based ONLY on the user's personal documents.
+SYSTEM_PROMPT = """You are a precise, grounded AI assistant that answers questions based ONLY on the user's personal documents and bookmarked articles.
 
 Strict Rules:
-1. Answer the question using ONLY the provided context chunks below.
+1. Answer the question using ONLY the provided context blocks below.
 2. Do NOT use any outside training knowledge or make up facts.
-3. Every factual claim in your answer must cite the source file it came from (e.g. [source: filename.pdf]).
-4. If the provided context does not contain the answer, state clearly and honestly: "I don't have information on that in your indexed files."
-5. Be direct, concise, and structured in your explanation."""
+3. Every factual claim in your answer must cite the source file or bookmark title it came from (e.g. [source: filename.pdf] or [source: Bookmark Title (URL)]).
+4. If the provided context does not contain the answer, state clearly and honestly: "I don't have information on that in your indexed files." If the context partially covers the question, answer what is supported by the text with citations and note what is not mentioned.
+5. Be direct, concise, and structured in your explanation.
+"""
 
 
 class PromptBuilder:
@@ -47,8 +48,16 @@ class PromptBuilder:
         # Format context blocks
         context_blocks: list[str] = []
         for idx, chunk in enumerate(chunks, 1):
+            source_type = chunk.metadata.get("source_type", "file")
+            if source_type == "bookmark" or chunk.metadata.get("url"):
+                bm_title = chunk.metadata.get("title") or chunk.file_name
+                bm_url = chunk.metadata.get("url") or chunk.source_path
+                source_label = f"Bookmark: '{bm_title}' ({bm_url})"
+            else:
+                source_label = f"File: {chunk.file_name}"
+
             block = (
-                f"--- Context Block {idx} [Source: {chunk.file_name} | Chunk #{chunk.chunk_index} | Score: {chunk.score:.3f}] ---\n"
+                f"--- Context Block {idx} [Source: {source_label} | Chunk #{chunk.chunk_index} | Score: {chunk.score:.3f}] ---\n"
                 f"{chunk.text.strip()}\n"
             )
             context_blocks.append(block)
@@ -56,10 +65,11 @@ class PromptBuilder:
         formatted_context = "\n".join(context_blocks)
 
         user_prompt = (
-            f"Context from indexed documents:\n\n"
+            f"Context from indexed knowledge base (documents & bookmarks):\n\n"
             f"{formatted_context}\n\n"
             f"Question: {clean_question}\n\n"
-            f"Instructions: Provide an accurate answer based ONLY on the context blocks above. Cite the source document name(s)."
+            f"Instructions: Provide an accurate answer based ONLY on the context blocks above. Cite the source document/bookmark name(s)."
         )
 
         return self.system_prompt, user_prompt, True
+

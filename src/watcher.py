@@ -1,11 +1,13 @@
 import argparse
 from dataclasses import dataclass
+import hashlib
 import logging
 from pathlib import Path
 import sys
 import threading
 import time
 from typing import Callable, Optional
+
 
 # Ensure standard streams handle UTF-8 safely on Windows
 if sys.platform == "win32":
@@ -36,12 +38,14 @@ except ImportError:
     PollingObserver = Observer
 
 
+from src.bookmarks import BookmarkItem, ChromeBookmarkParser
 from src.config import settings
 from src.db import Database
 from src.embeddings import BaseEmbedder, get_embedder
 from src.extractors.factory import ExtractorFactory
 from src.ingest import IngestionPipeline
 from src.vector_store import ChromaVectorStore
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("src.watcher")
@@ -344,11 +348,83 @@ class DocumentWatcher:
         self.stop()
 
 
+class ChromeBookmarkWatcher:
+    """Continuously monitors Chrome Bookmarks and synchronizes additions and deletions."""
+
+    def __init__(
+        self,
+        pipeline: IngestionPipeline,
+        custom_bookmarks_path: Optional[Path] = None,
+        poll_interval: float = 15.0,
+    ):
+        self.pipeline = pipeline
+        self.custom_bookmarks_path = custom_bookmarks_path
+        self.poll_interval = poll_interval
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._last_state_hash = ""
+
+    def _compute_state_hash(self, bookmarks: list[BookmarkItem]) -> str:
+        s = "".join(f"{b.id}:{b.title}:{b.url}:{b.folder}" for b in bookmarks)
+        return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+    def sync_bookmarks(self) -> None:
+        """Diff disk bookmarks with SQLite state and sync additions and deletions."""
+        try:
+            current_bookmarks = ChromeBookmarkParser.discover_all_bookmarks(self.custom_bookmarks_path)
+            state_hash = self._compute_state_hash(current_bookmarks)
+            if state_hash == self._last_state_hash:
+                return
+
+            self._last_state_hash = state_hash
+            current_urls = {b.url: b for b in current_bookmarks}
+            tracked = {b["url"]: b for b in self.pipeline.db.list_all_bookmarks()}
+
+            # 1. Identify deleted bookmarks (purge ChromaDB vectors and SQLite entry)
+            for url, row in tracked.items():
+                if row.get("status") == "indexed" and url not in current_urls:
+                    logger.info(f"Bookmark removed from Chrome: '{row.get('title')}' -> {url}")
+                    self.pipeline.delete_bookmark(url)
+
+            # 2. Ingest new or modified bookmarks
+            for url, bm in current_urls.items():
+                if url not in tracked or tracked[url].get("status") != "indexed":
+                    logger.info(f"New or pending bookmark found: '{bm.title}' -> {url}")
+                    self.pipeline.ingest_bookmark(bm)
+
+        except Exception as e:
+            logger.error(f"Error during bookmark sync: {e}", exc_info=True)
+
+    def _run_loop(self) -> None:
+        self.sync_bookmarks()
+        while self._running:
+            time.sleep(self.poll_interval)
+            if not self._running:
+                break
+            self.sync_bookmarks()
+
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._run_loop, name="ChromeBookmarkWatcher", daemon=True)
+        self._thread.start()
+        logger.info(f"Chrome bookmark watcher started (interval: {self.poll_interval}s)")
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=3.0)
+        logger.info("Chrome bookmark watcher stopped")
+
+
 def run_watcher(
     watch_dir: Path,
     debounce_delay: float = 1.5,
     settle_delay: float = 0.5,
     initial_sync: bool = False,
+    watch_bookmarks: bool = True,
+    bookmarks_path: Optional[Path] = None,
     use_mock: bool = False,
 ) -> None:
     """Run the watcher CLI process until interrupted."""
@@ -356,10 +432,11 @@ def run_watcher(
     watch_dir.mkdir(parents=True, exist_ok=True)
 
     console.print(Panel.fit(
-        f"[bold cyan]Personal AI Brain - Real-Time Document Watcher[/bold cyan]\n"
-        f"[bold white]Directory:[/bold white] [green]{watch_dir}[/green]\n"
+        f"[bold cyan]Personal AI Brain - Knowledge Base Watcher[/bold cyan]\n"
+        f"[bold white]Documents Directory:[/bold white] [green]{watch_dir}[/green]\n"
+        f"[bold white]Watch Chrome Bookmarks:[/bold white] [green]{'Enabled' if watch_bookmarks else 'Disabled'}[/green]\n"
         f"[bold white]Debounce:[/bold white] [yellow]{debounce_delay}s[/yellow] | "
-        f"[bold white]Supported Types:[/bold white] [magenta].pdf, .docx, .txt, .md[/magenta]",
+        f"[bold white]Supported Types:[/bold white] [magenta].pdf, .docx, .txt, .md, Chrome Bookmarks[/magenta]",
         border_style="cyan",
     ))
 
@@ -376,28 +453,41 @@ def run_watcher(
             f"{stats.skipped} skipped, {stats.deleted} deleted."
         )
 
-    watcher = DocumentWatcher(
+    doc_watcher = DocumentWatcher(
         watch_dir=watch_dir,
         pipeline=pipeline,
         debounce_delay=debounce_delay,
         settle_delay=settle_delay,
     )
 
-    watcher.start()
-    console.print("[bold green]✓ Watcher active and listening for file changes... (Press Ctrl+C to stop)[/bold green]\n")
+    bm_watcher = None
+    if watch_bookmarks:
+        bm_watcher = ChromeBookmarkWatcher(
+            pipeline=pipeline,
+            custom_bookmarks_path=bookmarks_path,
+            poll_interval=settings.BOOKMARK_WATCH_INTERVAL,
+        )
+
+    doc_watcher.start()
+    if bm_watcher:
+        bm_watcher.start()
+
+    console.print("[bold green]✓ Watcher active and listening for document & bookmark changes... (Press Ctrl+C to stop)[/bold green]\n")
 
     try:
         while True:
             time.sleep(1.0)
     except KeyboardInterrupt:
-        console.print("\n[yellow]Stopping watcher gracefully...[/yellow]")
+        console.print("\n[yellow]Stopping watchers gracefully...[/yellow]")
     finally:
-        watcher.stop()
-        console.print("[bold green]Watcher terminated.[/bold green]")
+        doc_watcher.stop()
+        if bm_watcher:
+            bm_watcher.stop()
+        console.print("[bold green]All watchers terminated.[/bold green]")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Personal AI Brain - Real-Time Document Watcher")
+    parser = argparse.ArgumentParser(description="Personal AI Brain - Real-Time Knowledge Watcher")
     parser.add_argument(
         "--dir",
         type=str,
@@ -422,20 +512,35 @@ def main():
         help="Perform full sync of directory on startup before watching",
     )
     parser.add_argument(
+        "--no-bookmarks",
+        action="store_true",
+        help="Disable Chrome bookmarks watching",
+    )
+    parser.add_argument(
+        "--bookmarks-file",
+        type=str,
+        help="Path to Chrome Bookmarks or AccountBookmarks file",
+    )
+    parser.add_argument(
         "--mock-embeddings",
         action="store_true",
         help="Use mock embeddings for testing without Ollama",
     )
 
     args = parser.parse_args()
+    bm_path = Path(args.bookmarks_file) if args.bookmarks_file else None
+
     run_watcher(
         watch_dir=Path(args.dir),
         debounce_delay=args.debounce,
         settle_delay=args.settle,
         initial_sync=args.initial_sync,
+        watch_bookmarks=not args.no_bookmarks,
+        bookmarks_path=bm_path,
         use_mock=args.mock_embeddings,
     )
 
 
 if __name__ == "__main__":
     main()
+

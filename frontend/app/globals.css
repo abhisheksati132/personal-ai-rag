@@ -55,8 +55,8 @@ body {
 
 /* Custom subtle scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -64,10 +64,11 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #8A857833;
+  background: rgba(138, 133, 120, 0.35);
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #5B6B5B66;
+  background: rgba(61, 90, 76, 0.55);
 }
+

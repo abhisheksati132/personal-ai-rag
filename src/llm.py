@@ -163,9 +163,10 @@ class GroqLLM(BaseLLM):
         temperature: Optional[float] = None,
         timeout: Optional[float] = None,
     ):
-        self.api_key = api_key or settings.GROQ_API_KEY
+        self.api_key = api_key if api_key is not None else settings.GROQ_API_KEY
         self.model_name = model_name or settings.GROQ_MODEL
         self.base_url = (base_url or settings.GROQ_BASE_URL).rstrip("/")
+
         self.temperature = temperature if temperature is not None else settings.LLM_TEMPERATURE
         self.timeout = timeout or settings.GROQ_TIMEOUT
 
