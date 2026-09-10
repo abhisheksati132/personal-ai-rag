@@ -15,6 +15,8 @@ interface SidebarProps {
   onNewChat?: () => void;
   onRenameSession?: (sessionId: string, newTitle: string) => Promise<void>;
   onDeleteSession?: (sessionId: string) => Promise<void>;
+  onLogout?: () => void;
+  showLogout?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -29,6 +31,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onNewChat,
   onRenameSession,
   onDeleteSession,
+  onLogout,
+  showLogout = false,
 }) => {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editTitleInput, setEditTitleInput] = useState<string>('');
@@ -322,6 +326,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           </div>
         </div>
+
+        {showLogout && (
+          <button
+            type="button"
+            onClick={onLogout}
+            className="w-full mt-2.5 flex items-center justify-center gap-1.5 py-2 px-3 bg-paper/60 hover:bg-red-50/80 border border-moss/20 hover:border-red-200 rounded-md font-mono text-[11px] text-stone hover:text-red-700 transition-all cursor-pointer shadow-2xs"
+            title="Lock private brain instance"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" strokeWidth="1.8" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" strokeWidth="1.8" />
+            </svg>
+            <span>Lock Brain</span>
+          </button>
+        )}
       </div>
     </aside>
   );

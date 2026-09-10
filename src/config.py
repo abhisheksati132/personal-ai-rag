@@ -46,6 +46,17 @@ class Settings(BaseSettings):
     # ChromaDB Collection
     COLLECTION_NAME: str = "personal_brain"
 
+    # Cloud Storage & Database Settings
+    DATABASE_URL: Optional[str] = None
+    QDRANT_URL: Optional[str] = None
+    QDRANT_API_KEY: Optional[str] = None
+    QDRANT_COLLECTION: str = "personal_brain"
+    EMBEDDING_PROVIDER: str = "auto"
+
+    # Single-User Authentication Gate
+    APP_PASSWORD: Optional[str] = None
+    AUTH_SECRET_KEY: Optional[str] = None
+
     # Chrome Bookmarks Settings
     CHROME_BOOKMARKS_PATH: Optional[Path] = None
     CHROME_PROFILE: str = "Default"
@@ -66,6 +77,16 @@ class Settings(BaseSettings):
             self.SQLITE_DB_PATH = self.DATA_DIR / "brain.db"
         if not self.GROQ_API_KEY:
             self.GROQ_API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("BRAIN_GROQ_API_KEY") or None
+        if not self.DATABASE_URL:
+            self.DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("BRAIN_DATABASE_URL") or None
+        if not self.QDRANT_URL:
+            self.QDRANT_URL = os.getenv("QDRANT_URL") or os.getenv("BRAIN_QDRANT_URL") or None
+        if not self.QDRANT_API_KEY:
+            self.QDRANT_API_KEY = os.getenv("QDRANT_API_KEY") or os.getenv("BRAIN_QDRANT_API_KEY") or None
+        if not self.APP_PASSWORD:
+            self.APP_PASSWORD = os.getenv("APP_PASSWORD") or os.getenv("BRAIN_APP_PASSWORD") or None
+        if not self.AUTH_SECRET_KEY:
+            self.AUTH_SECRET_KEY = os.getenv("AUTH_SECRET_KEY") or os.getenv("BRAIN_AUTH_SECRET_KEY") or None
 
 
         # Auto-detect Chrome Bookmarks path if not explicitly configured

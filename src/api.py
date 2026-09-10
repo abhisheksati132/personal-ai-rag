@@ -1,11 +1,13 @@
 import logging
 from typing import Literal, Optional
-from fastapi import FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
+from src.auth import create_access_token, is_auth_enabled, require_auth, verify_password, verify_token
+
 from src.config import settings
-from src.db import Database
+from src.db import Database, get_database
 from src.llm import (
     BaseLLM,
     GroqAPIError,
@@ -17,7 +19,7 @@ from src.llm import (
 )
 from src.prompt import FALLBACK_NO_INFO_RESPONSE, PromptBuilder
 from src.retrieval import RetrievalService
-from src.vector_store import ChromaVectorStore
+from src.vector_store import BaseVectorStore, ChromaVectorStore, QdrantVectorStore, get_vector_store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -87,6 +89,23 @@ class HealthResponse(BaseModel):
     indexed_files: int
     indexed_bookmarks: int = 0
     total_vectors: int
+    database_backend: Optional[str] = "sqlite"
+    vector_backend: Optional[str] = "chroma"
+
+
+class LoginRequest(BaseModel):
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+    token_type: str = "bearer"
+    expires_at: float
+
+
+class AuthStatusResponse(BaseModel):
+    auth_enabled: bool
+    authenticated: bool
 
 
 class SessionCreateRequest(BaseModel):
@@ -136,11 +155,47 @@ class SessionDetailResponse(BaseModel):
 
 # --- App Singletons ---
 
-_retrieval_service = RetrievalService()
+_db = get_database()
+_vector_store = get_vector_store()
+_retrieval_service = RetrievalService(vector_store=_vector_store)
 _prompt_builder = PromptBuilder()
 _llm_local = get_llm(provider="local")
-_db = Database()
-_vector_store = ChromaVectorStore()
+
+
+# --- Auth Endpoints ---
+
+@app.post(
+    "/auth/login",
+    response_model=LoginResponse,
+    summary="Login to private brain instance",
+)
+def login(request: LoginRequest) -> LoginResponse:
+    """Validate password and issue an authenticated session bearer token."""
+    if is_auth_enabled() and not verify_password(request.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid password",
+        )
+    token_data = create_access_token()
+    return LoginResponse(**token_data)
+
+
+@app.get(
+    "/auth/status",
+    response_model=AuthStatusResponse,
+    summary="Check if auth is enabled and if current token is valid",
+)
+def auth_status(authorization: Optional[str] = Header(None)) -> AuthStatusResponse:
+    """Return whether authentication is enabled and whether the client token is valid."""
+    if not is_auth_enabled():
+        return AuthStatusResponse(auth_enabled=False, authenticated=True)
+
+    is_valid = False
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:].strip()
+        is_valid = verify_token(token)
+
+    return AuthStatusResponse(auth_enabled=True, authenticated=is_valid)
 
 
 # --- Endpoints ---
@@ -148,6 +203,7 @@ _vector_store = ChromaVectorStore()
 @app.post(
     "/query",
     response_model=QueryResponse,
+    dependencies=[Depends(require_auth)],
     status_code=status.HTTP_200_OK,
     summary="Query personal documents and get a grounded answer",
 )
@@ -286,6 +342,7 @@ def query_documents(request: QueryRequest) -> QueryResponse:
 @app.post(
     "/sessions",
     response_model=SessionItem,
+    dependencies=[Depends(require_auth)],
     status_code=status.HTTP_201_CREATED,
     summary="Create a new conversation session",
 )
@@ -306,6 +363,7 @@ def create_session(request: Optional[SessionCreateRequest] = None) -> SessionIte
 @app.get(
     "/sessions",
     response_model=list[SessionItem],
+    dependencies=[Depends(require_auth)],
     summary="List all conversation sessions",
 )
 def list_sessions() -> list[SessionItem]:
@@ -316,6 +374,7 @@ def list_sessions() -> list[SessionItem]:
 @app.get(
     "/sessions/{session_id}",
     response_model=SessionDetailResponse,
+    dependencies=[Depends(require_auth)],
     summary="Get full conversation history for a session",
 )
 def get_session(session_id: str) -> SessionDetailResponse:
@@ -332,6 +391,7 @@ def get_session(session_id: str) -> SessionDetailResponse:
 @app.patch(
     "/sessions/{session_id}",
     response_model=dict,
+    dependencies=[Depends(require_auth)],
     summary="Rename a conversation session",
 )
 def rename_session(session_id: str, request: SessionRenameRequest) -> dict:
@@ -348,6 +408,7 @@ def rename_session(session_id: str, request: SessionRenameRequest) -> dict:
 @app.delete(
     "/sessions/{session_id}",
     response_model=dict,
+    dependencies=[Depends(require_auth)],
     summary="Delete a conversation session and all its messages",
 )
 def delete_session(session_id: str) -> dict:
@@ -368,8 +429,12 @@ def health_check() -> HealthResponse:
     ollama_ok = _llm_local.is_available()
     groq_ok = bool(settings.GROQ_API_KEY and settings.GROQ_API_KEY.strip())
 
+    db_type = "postgres" if getattr(_db, "is_postgres", False) else "sqlite"
+    vec_type = "qdrant" if isinstance(_vector_store, QdrantVectorStore) else "chroma"
+    overall_ok = ollama_ok or groq_ok
+
     return HealthResponse(
-        status="healthy" if ollama_ok else "degraded",
+        status="healthy" if overall_ok else "degraded",
         ollama_connected=ollama_ok,
         groq_configured=groq_ok,
         embedding_model=settings.EMBEDDING_MODEL,
@@ -378,22 +443,24 @@ def health_check() -> HealthResponse:
         indexed_files=stats.get("indexed_files", 0),
         indexed_bookmarks=stats.get("indexed_bookmarks", 0),
         total_vectors=stats.get("total_chunks", 0),
+        database_backend=db_type,
+        vector_backend=vec_type,
     )
 
 
-@app.get("/stats", summary="Get database indexing stats")
+@app.get("/stats", dependencies=[Depends(require_auth)], summary="Get database indexing stats")
 def get_stats() -> dict:
     """Return current database indexing stats."""
     return _db.get_stats()
 
 
-@app.get("/files", summary="List all tracked and indexed files and bookmarks")
+@app.get("/files", dependencies=[Depends(require_auth)], summary="List all tracked and indexed files and bookmarks")
 def list_files() -> list[dict]:
     """Return list of all indexed knowledge items (files and bookmarks) with metadata and status."""
     return _db.list_all_knowledge_items()
 
 
-@app.get("/bookmarks", summary="List all tracked Chrome bookmarks")
+@app.get("/bookmarks", dependencies=[Depends(require_auth)], summary="List all tracked Chrome bookmarks")
 def list_bookmarks() -> list[dict]:
     """Return list of all indexed/tracked Chrome bookmarks."""
     return _db.list_all_bookmarks()

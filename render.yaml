@@ -1,0 +1,54 @@
+services:
+  # ----------------------------------------------------------------------------
+  # 1. FastAPI Backend & RAG Engine
+  # ----------------------------------------------------------------------------
+  - type: web
+    name: personal-ai-brain-api
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn src.api:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: APP_PASSWORD
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: BRAIN_GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: BRAIN_SIMILARITY_THRESHOLD
+        value: "0.40"
+      - key: BRAIN_TOP_K
+        value: "8"
+      - key: BRAIN_SCORE_DROP_THRESHOLD
+        value: "0.15"
+
+  # ----------------------------------------------------------------------------
+  # 2. Next.js Web UI (Static Export)
+  # ----------------------------------------------------------------------------
+  - type: web
+    name: personal-ai-brain-ui
+    runtime: static
+    plan: free
+    region: oregon
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/out
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        fromService:
+          type: web
+          name: personal-ai-brain-api
+          property: host

@@ -43,16 +43,13 @@ class OllamaEmbedder(BaseEmbedder):
         """Check if Ollama server is reachable and model is available."""
         try:
             models_res = self.client.list()
-            # models_res is a ListResponse or dict
             model_names = []
             if hasattr(models_res, "models"):
                 model_names = [m.model for m in models_res.models]
             elif isinstance(models_res, dict) and "models" in models_res:
                 model_names = [m.get("name", "") for m in models_res["models"]]
             
-            # Check if our embedding model is in the list
-            found = any(self.model_name in name for name in model_names)
-            return found
+            return any(self.model_name in name for name in model_names)
         except Exception as e:
             logger.debug(f"Ollama healthcheck failed: {e}")
             return False
@@ -82,6 +79,40 @@ class OllamaEmbedder(BaseEmbedder):
         return embeddings
 
 
+class FastEmbedder(BaseEmbedder):
+    """Generates embeddings using CPU-based FastEmbed (nomic-ai/nomic-embed-text-v1.5, 768 dimensions).
+    Ideal for cloud deployments (Render) where Ollama is not running on the container host.
+    """
+
+    def __init__(self, model_name: str = "nomic-ai/nomic-embed-text-v1.5"):
+        self.model_name = model_name
+        self._model = None
+
+    @property
+    def model(self):
+        if self._model is None:
+            from fastembed import TextEmbedding
+            self._model = TextEmbedding(model_name=self.model_name)
+        return self._model
+
+    def is_available(self) -> bool:
+        try:
+            return self.model is not None
+        except Exception:
+            return False
+
+    def embed_text(self, text: str) -> list[float]:
+        clean_text = text.strip() or " "
+        embeddings = list(self.model.embed([clean_text]))
+        return [float(x) for x in embeddings[0]]
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        embeddings = list(self.model.embed(texts))
+        return [[float(x) for x in vec] for vec in embeddings]
+
+
 class MockEmbedder(BaseEmbedder):
     """Deterministic mock embedder for offline tests and development without Ollama."""
 
@@ -89,14 +120,12 @@ class MockEmbedder(BaseEmbedder):
         self.dimension = dimension
 
     def _hash_to_vector(self, text: str) -> list[float]:
-        # Generate pseudo-random deterministic vector from text hash
         vec = []
         for i in range(self.dimension):
             h = hashlib.sha256(f"{text}_{i}".encode("utf-8")).digest()
             val = (int.from_bytes(h[:4], "big") / 0xFFFFFFFF) * 2 - 1
             vec.append(val)
         
-        # Normalize to unit length
         norm = math.sqrt(sum(x * x for x in vec)) or 1.0
         return [x / norm for x in vec]
 
@@ -107,8 +136,22 @@ class MockEmbedder(BaseEmbedder):
         return [self.embed_text(t) for t in texts]
 
 
-def get_embedder(use_mock: bool = False) -> BaseEmbedder:
-    """Factory function to get an embedder, falling back to mock if requested."""
-    if use_mock:
+def get_embedder(use_mock: bool = False, provider: Optional[str] = None) -> BaseEmbedder:
+    """Factory function to get an embedder.
+    Supports 'auto', 'ollama', 'fastembed', 'mock'.
+    In 'auto' mode: uses Ollama if available; otherwise falls back to FastEmbedder.
+    """
+    prov = (provider or getattr(settings, "EMBEDDING_PROVIDER", "auto")).lower()
+    if use_mock or prov == "mock":
         return MockEmbedder()
-    return OllamaEmbedder()
+    if prov == "fastembed":
+        return FastEmbedder()
+    if prov == "ollama":
+        return OllamaEmbedder()
+
+    # 'auto': Try Ollama first; if unavailable, seamlessly fall back to FastEmbedder
+    ollama_embedder = OllamaEmbedder()
+    if ollama_embedder.is_available():
+        return ollama_embedder
+    logger.info("Ollama unavailable for embeddings; defaulting to FastEmbedder (nomic-ai/nomic-embed-text-v1.5)")
+    return FastEmbedder()

@@ -24,93 +24,182 @@ def compute_file_hash(file_path: Path) -> str:
 
 
 class Database:
-    """SQLite manager for tracking file indexing states, hashes, chunk statistics, and conversation sessions."""
+    """Unified database manager supporting both SQLite (local default) and PostgreSQL (Neon/Supabase)."""
 
-    def __init__(self, db_path: Optional[Path] = None):
-        self.db_path = Path(db_path or settings.SQLITE_DB_PATH)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(
+        self,
+        db_path: Optional[Path] = None,
+        database_url: Optional[str] = None,
+    ):
+        self.database_url = database_url or settings.DATABASE_URL
+        self.is_postgres = bool(self.database_url and self.database_url.strip())
+        if self.is_postgres:
+            self.db_path = None
+        else:
+            self.db_path = Path(db_path or settings.SQLITE_DB_PATH)
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
     @contextmanager
     def _get_connection(self):
-        conn = sqlite3.connect(str(self.db_path), timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        try:
-            yield conn
-        finally:
-            conn.close()
+        if self.is_postgres:
+            import psycopg
+            from psycopg.rows import dict_row
+
+            conn = psycopg.connect(self.database_url, row_factory=dict_row)
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+        else:
+            conn = sqlite3.connect(str(self.db_path), timeout=30.0)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute("PRAGMA foreign_keys=ON;")
+            try:
+                yield conn
+            finally:
+                conn.close()
+
+    def _exec(self, conn, sql: str, params: tuple | list = ()):
+        """Execute a SQL statement adapting placeholders for SQLite (?) vs Postgres (%s)."""
+        if self.is_postgres:
+            sql = sql.replace("?", "%s")
+        return conn.execute(sql, params)
 
     def _init_db(self) -> None:
-        with self._get_connection() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS indexed_files (
-                    file_path TEXT PRIMARY KEY,
-                    file_name TEXT NOT NULL,
-                    file_hash TEXT NOT NULL,
-                    file_size INTEGER NOT NULL,
-                    mtime REAL NOT NULL,
-                    chunk_count INTEGER DEFAULT 0,
-                    indexed_at REAL NOT NULL,
-                    status TEXT NOT NULL,
-                    error_message TEXT
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS indexed_bookmarks (
-                    bookmark_id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    url TEXT NOT NULL UNIQUE,
-                    folder TEXT NOT NULL,
-                    content_hash TEXT,
-                    chunk_count INTEGER DEFAULT 0,
-                    fetched_at REAL,
-                    indexed_at REAL NOT NULL,
-                    status TEXT NOT NULL,
-                    error_message TEXT
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS sessions (
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    sources TEXT,
-                    provider TEXT,
-                    model TEXT,
-                    created_at REAL NOT NULL,
-                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
-                )
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id)
-            """)
-            conn.commit()
-
+        if self.is_postgres:
+            with self._get_connection() as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS indexed_files (
+                        file_path TEXT PRIMARY KEY,
+                        file_name TEXT NOT NULL,
+                        file_hash TEXT NOT NULL,
+                        file_size BIGINT NOT NULL,
+                        mtime DOUBLE PRECISION NOT NULL,
+                        chunk_count INTEGER DEFAULT 0,
+                        indexed_at DOUBLE PRECISION NOT NULL,
+                        status TEXT NOT NULL,
+                        error_message TEXT
+                    );
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS indexed_bookmarks (
+                        bookmark_id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        url TEXT NOT NULL UNIQUE,
+                        folder TEXT NOT NULL,
+                        content_hash TEXT,
+                        chunk_count INTEGER DEFAULT 0,
+                        fetched_at DOUBLE PRECISION,
+                        indexed_at DOUBLE PRECISION NOT NULL,
+                        status TEXT NOT NULL,
+                        error_message TEXT
+                    );
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS sessions (
+                        id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        created_at DOUBLE PRECISION NOT NULL,
+                        updated_at DOUBLE PRECISION NOT NULL
+                    );
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        sources TEXT,
+                        provider TEXT,
+                        model TEXT,
+                        created_at DOUBLE PRECISION NOT NULL,
+                        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                    );
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_files_indexed_at ON indexed_files(indexed_at);
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_bookmarks_indexed_at ON indexed_bookmarks(indexed_at);
+                """)
+        else:
+            with self._get_connection() as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS indexed_files (
+                        file_path TEXT PRIMARY KEY,
+                        file_name TEXT NOT NULL,
+                        file_hash TEXT NOT NULL,
+                        file_size INTEGER NOT NULL,
+                        mtime REAL NOT NULL,
+                        chunk_count INTEGER DEFAULT 0,
+                        indexed_at REAL NOT NULL,
+                        status TEXT NOT NULL,
+                        error_message TEXT
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS indexed_bookmarks (
+                        bookmark_id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        url TEXT NOT NULL UNIQUE,
+                        folder TEXT NOT NULL,
+                        content_hash TEXT,
+                        chunk_count INTEGER DEFAULT 0,
+                        fetched_at REAL,
+                        indexed_at REAL NOT NULL,
+                        status TEXT NOT NULL,
+                        error_message TEXT
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS sessions (
+                        id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        sources TEXT,
+                        provider TEXT,
+                        model TEXT,
+                        created_at REAL NOT NULL,
+                        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                    )
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id)
+                """)
+                conn.commit()
 
     def get_file(self, file_path: str | Path) -> Optional[dict[str, Any]]:
         """Retrieve tracking record for a specific file path."""
         path_str = str(file_path)
         with self._get_connection() as conn:
-            cursor = conn.execute("SELECT * FROM indexed_files WHERE file_path = ?", (path_str,))
+            cursor = self._exec(conn, "SELECT * FROM indexed_files WHERE file_path = ?", (path_str,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
     def get_bookmark(self, bookmark_id_or_url: str) -> Optional[dict[str, Any]]:
         """Retrieve tracking record for a bookmark by id or URL."""
         with self._get_connection() as conn:
-            cursor = conn.execute(
+            cursor = self._exec(
+                conn,
                 "SELECT * FROM indexed_bookmarks WHERE bookmark_id = ? OR url = ?",
                 (bookmark_id_or_url, bookmark_id_or_url),
             )
@@ -118,7 +207,7 @@ class Database:
             return dict(row) if row else None
 
     def needs_reindexing(self, file_path: Path) -> tuple[bool, str, float, int]:
-        """Check if file has changed compared to SQLite state.
+        """Check if file has changed compared to database state.
         
         Returns:
             Tuple of (needs_reindex: bool, file_hash: str, mtime: float, file_size: int)
@@ -139,7 +228,6 @@ class Database:
         if existing["status"] != "indexed":
             return True, file_hash, mtime, file_size
 
-        # Check hash and modified time
         if existing["file_hash"] != file_hash or existing["file_size"] != file_size:
             return True, file_hash, mtime, file_size
 
@@ -157,7 +245,8 @@ class Database:
         path_str = str(file_path)
         now = time.time()
         with self._get_connection() as conn:
-            conn.execute(
+            self._exec(
+                conn,
                 """
                 INSERT INTO indexed_files (
                     file_path, file_name, file_hash, file_size, mtime, chunk_count, indexed_at, status, error_message
@@ -185,7 +274,8 @@ class Database:
         file_size = stat.st_size if stat else 0
 
         with self._get_connection() as conn:
-            conn.execute(
+            self._exec(
+                conn,
                 """
                 INSERT INTO indexed_files (
                     file_path, file_name, file_hash, file_size, mtime, chunk_count, indexed_at, status, error_message
@@ -214,7 +304,8 @@ class Database:
         """Record a successfully fetched and indexed bookmark."""
         now = time.time()
         with self._get_connection() as conn:
-            conn.execute(
+            self._exec(
+                conn,
                 """
                 INSERT INTO indexed_bookmarks (
                     bookmark_id, title, url, folder, content_hash, chunk_count, fetched_at, indexed_at, status, error_message
@@ -245,7 +336,8 @@ class Database:
         """Record an extraction/fetch failure for a bookmark."""
         now = time.time()
         with self._get_connection() as conn:
-            conn.execute(
+            self._exec(
+                conn,
                 """
                 INSERT INTO indexed_bookmarks (
                     bookmark_id, title, url, folder, content_hash, chunk_count, fetched_at, indexed_at, status, error_message
@@ -263,19 +355,18 @@ class Database:
             )
             conn.commit()
 
-
-
     def remove_file(self, file_path: str | Path) -> None:
         """Remove a file from the tracking database."""
         path_str = str(file_path)
         with self._get_connection() as conn:
-            conn.execute("DELETE FROM indexed_files WHERE file_path = ?", (path_str,))
+            self._exec(conn, "DELETE FROM indexed_files WHERE file_path = ?", (path_str,))
             conn.commit()
 
     def remove_bookmark(self, bookmark_id_or_url: str) -> None:
         """Remove a bookmark from the tracking database."""
         with self._get_connection() as conn:
-            conn.execute(
+            self._exec(
+                conn,
                 "DELETE FROM indexed_bookmarks WHERE bookmark_id = ? OR url = ?",
                 (bookmark_id_or_url, bookmark_id_or_url),
             )
@@ -284,13 +375,13 @@ class Database:
     def list_all_files(self) -> list[dict[str, Any]]:
         """List all tracked files."""
         with self._get_connection() as conn:
-            cursor = conn.execute("SELECT * FROM indexed_files ORDER BY indexed_at DESC")
+            cursor = self._exec(conn, "SELECT * FROM indexed_files ORDER BY indexed_at DESC")
             return [dict(row) for row in cursor.fetchall()]
 
     def list_all_bookmarks(self) -> list[dict[str, Any]]:
         """List all tracked bookmarks."""
         with self._get_connection() as conn:
-            cursor = conn.execute("SELECT * FROM indexed_bookmarks ORDER BY indexed_at DESC")
+            cursor = self._exec(conn, "SELECT * FROM indexed_bookmarks ORDER BY indexed_at DESC")
             return [dict(row) for row in cursor.fetchall()]
 
     def list_all_knowledge_items(self) -> list[dict[str, Any]]:
@@ -332,7 +423,9 @@ class Database:
     def get_stats(self) -> dict[str, Any]:
         """Get aggregate indexing statistics across files and bookmarks."""
         with self._get_connection() as conn:
-            f_cursor = conn.execute("""
+            f_cursor = self._exec(
+                conn,
+                """
                 SELECT 
                     COUNT(*) as total_files,
                     COALESCE(SUM(CASE WHEN status = 'indexed' THEN 1 ELSE 0 END), 0) as indexed_files,
@@ -341,10 +434,13 @@ class Database:
                     COALESCE(SUM(file_size), 0) as total_bytes,
                     MAX(indexed_at) as last_indexed_at
                 FROM indexed_files
-            """)
+                """,
+            )
             f_stats = dict(f_cursor.fetchone() or {})
 
-            b_cursor = conn.execute("""
+            b_cursor = self._exec(
+                conn,
+                """
                 SELECT 
                     COUNT(*) as total_bookmarks,
                     COALESCE(SUM(CASE WHEN status = 'indexed' THEN 1 ELSE 0 END), 0) as indexed_bookmarks,
@@ -352,13 +448,14 @@ class Database:
                     COALESCE(SUM(chunk_count), 0) as bookmark_chunks,
                     MAX(indexed_at) as last_bookmark_indexed_at
                 FROM indexed_bookmarks
-            """)
+                """,
+            )
             b_stats = dict(b_cursor.fetchone() or {})
 
             total_chunks = (f_stats.get("total_chunks") or 0) + (b_stats.get("bookmark_chunks") or 0)
             indexed_items = (f_stats.get("indexed_files") or 0) + (b_stats.get("indexed_bookmarks") or 0)
             failed_items = (f_stats.get("failed_files") or 0) + (b_stats.get("failed_bookmarks") or 0)
-            
+
             f_last = f_stats.get("last_indexed_at") or 0.0
             b_last = b_stats.get("last_bookmark_indexed_at") or 0.0
             last_indexed_at = max(f_last, b_last) if (f_last or b_last) else None
@@ -392,9 +489,9 @@ class Database:
         formatted_date = f"{dt.strftime('%b %d, %Y')} · {dt.strftime('%I:%M %p')}"
         session_title = title.strip() if title and title.strip() else formatted_date
 
-
         with self._get_connection() as conn:
-            conn.execute(
+            self._exec(
+                conn,
                 """
                 INSERT INTO sessions (id, title, created_at, updated_at)
                 VALUES (?, ?, ?, ?)
@@ -416,7 +513,9 @@ class Database:
     def list_sessions(self) -> list[dict[str, Any]]:
         """List all conversation sessions ordered by most recently updated."""
         with self._get_connection() as conn:
-            cursor = conn.execute("""
+            cursor = self._exec(
+                conn,
+                """
                 SELECT 
                     s.id,
                     s.title,
@@ -430,15 +529,17 @@ class Database:
                     ) as first_query_preview
                 FROM sessions s
                 LEFT JOIN messages m ON s.id = m.session_id
-                GROUP BY s.id
+                GROUP BY s.id, s.title, s.created_at, s.updated_at
                 ORDER BY s.updated_at DESC
-            """)
+                """,
+            )
             return [dict(row) for row in cursor.fetchall()]
 
     def get_session(self, session_id: str) -> Optional[dict[str, Any]]:
         """Retrieve a session with all its chronological messages."""
         with self._get_connection() as conn:
-            s_cursor = conn.execute(
+            s_cursor = self._exec(
+                conn,
                 "SELECT id, title, created_at, updated_at FROM sessions WHERE id = ?",
                 (session_id,),
             )
@@ -447,7 +548,8 @@ class Database:
                 return None
 
             session_data = dict(s_row)
-            m_cursor = conn.execute(
+            m_cursor = self._exec(
+                conn,
                 """
                 SELECT id, session_id, role, content, sources, provider, model, created_at
                 FROM messages
@@ -479,7 +581,8 @@ class Database:
 
         now = time.time()
         with self._get_connection() as conn:
-            cursor = conn.execute(
+            cursor = self._exec(
+                conn,
                 "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
                 (title_clean, now, session_id),
             )
@@ -489,9 +592,8 @@ class Database:
     def delete_session(self, session_id: str) -> bool:
         """Delete a conversation session and all its messages."""
         with self._get_connection() as conn:
-            # Explicit delete for safety alongside foreign key CASCADE
-            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-            cursor = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            self._exec(conn, "DELETE FROM messages WHERE session_id = ?", (session_id,))
+            cursor = self._exec(conn, "DELETE FROM sessions WHERE id = ?", (session_id,))
             conn.commit()
             return cursor.rowcount > 0
 
@@ -511,20 +613,20 @@ class Database:
         sources_json = json.dumps(sources) if sources is not None else None
 
         with self._get_connection() as conn:
-            # Ensure session exists
-            s_check = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            s_check = self._exec(conn, "SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
             if not s_check:
                 dt = datetime.datetime.fromtimestamp(now)
                 formatted_date = f"{dt.strftime('%b %d, %Y')} · {dt.strftime('%I:%M %p')}"
-                conn.execute(
+                self._exec(
+                    conn,
                     "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
                     (session_id, formatted_date, now, now),
                 )
-
             else:
-                conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+                self._exec(conn, "UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
 
-            conn.execute(
+            self._exec(
+                conn,
                 """
                 INSERT INTO messages (
                     id, session_id, role, content, sources, provider, model, created_at
@@ -537,3 +639,9 @@ class Database:
         return mid
 
 
+def get_database(
+    db_path: Optional[Path] = None,
+    database_url: Optional[str] = None,
+) -> Database:
+    """Factory to get the configured Database instance (PostgreSQL or SQLite)."""
+    return Database(db_path=db_path, database_url=database_url)
