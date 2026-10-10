@@ -26,8 +26,8 @@ Before creating or deploying services on Render:
 2. Click **New +** -> **Blueprint**.
 3. Select the `personal-ai-rag` repository on branch `main`.
 4. Render will parse `render.yaml` and discover two services:
-   - **`personal-ai-brain-api`** (FastAPI Web Service - Python 3.11)
-   - **`personal-ai-brain-ui`** (Next.js Static Site)
+   - **`personal-ai-brain-api`** (FastAPI Web Service - Python 3.11, Singapore region `singapore` to minimize latency to Mumbai database)
+   - **`personal-ai-brain-ui`** (Next.js Static Site - global CDN)
 
 > **Important**: `render.yaml` deliberately marks `NEXT_PUBLIC_API_URL` and `CORS_ORIGINS` with `sync: false`. Render's internal `fromService` discovery returns private mesh hostnames (e.g. `personal-ai-brain-api:10000`), which client web browsers cannot reach. Public HTTPS URLs must be manually entered in the exact order below.
 

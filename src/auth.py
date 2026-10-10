@@ -82,14 +82,17 @@ login_limiter = LoginRateLimiter(max_failures=5, window_seconds=60.0)
 
 def get_client_ip(request: Any) -> str:
     """Extract client IP safely.
-    When BRAIN_TRUST_PROXY is True, reads the original client IP from X-Forwarded-For.
+    When BRAIN_TRUST_PROXY is True, reads the client IP from the RIGHTMOST entry of X-Forwarded-For
+    (the entry appended by the immediate trusted edge reverse proxy, e.g. Render).
+    Leftmost entries are client-controlled and must NOT be trusted for rate limiting.
     When BRAIN_TRUST_PROXY is False (default), ignores X-Forwarded-For to prevent header spoofing,
     using request.client.host directly.
     """
     if getattr(settings, "BRAIN_TRUST_PROXY", False):
-        forwarded = getattr(request, "headers", {}).get("X-Forwarded-For")
+        forwarded = getattr(request, "headers", {}).get("x-forwarded-for") or getattr(request, "headers", {}).get("X-Forwarded-For")
         if forwarded:
-            client_ip = forwarded.split(",")[0].strip()
+            # Trusted edge proxy appends real client IP to the end: "spoofed_ip, trusted_proxy_added_ip"
+            client_ip = forwarded.split(",")[-1].strip()
             if client_ip:
                 return client_ip
     client = getattr(request, "client", None)

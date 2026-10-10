@@ -135,6 +135,52 @@ def test_proxy_rate_limiting_isolated_ips(monkeypatch):
     assert res.status_code == 200
 
 
+def test_proxy_rate_limiting_rightmost_ip_extraction(monkeypatch):
+    """When BRAIN_TRUST_PROXY is True, header '1.2.3.4, 5.6.7.8' is keyed on rightmost IP 5.6.7.8."""
+    from src.auth import login_limiter, get_client_ip
+    login_limiter.reset()
+
+    monkeypatch.setattr(settings, "BRAIN_TRUST_PROXY", True)
+    client = TestClient(app)
+
+    # Test get_client_ip directly with multi-hop X-Forwarded-For header
+    class MockRequest:
+        headers = {"x-forwarded-for": "1.2.3.4, 5.6.7.8"}
+        client = None
+
+    assert get_client_ip(MockRequest()) == "5.6.7.8"
+
+
+def test_proxy_spoofed_leftmost_cannot_bypass_lockout(monkeypatch):
+    """Rotating leftmost spoofed IPs while sharing the same rightmost proxy IP shares one lockout bucket."""
+    from src.auth import login_limiter
+    login_limiter.reset()
+
+    monkeypatch.setattr(settings, "APP_PASSWORD", "correct_pass")
+    monkeypatch.setattr(settings, "BRAIN_TRUST_PROXY", True)
+    client = TestClient(app)
+
+    real_client_ip = "198.51.100.50"
+
+    # Attacker rotates spoofed leftmost IP (10.0.0.1 .. 10.0.0.5) while real proxy appends 198.51.100.50
+    for i in range(5):
+        header_val = f"10.0.0.{i}, {real_client_ip}"
+        res = client.post("/auth/login", json={"password": "bad_password"}, headers={"X-Forwarded-For": header_val})
+        if i < 4:
+            assert res.status_code == 401
+        else:
+            assert res.status_code == 429
+
+    # 6th attempt with yet another new spoofed leftmost IP is STILL locked out on 198.51.100.50
+    res = client.post("/auth/login", json={"password": "bad_password"}, headers={"X-Forwarded-For": f"10.0.0.99, {real_client_ip}"})
+    assert res.status_code == 429
+    assert "Too many failed login attempts" in res.json().get("detail", "")
+
+    # Legitimate user with different rightmost IP (203.0.113.88) can still authenticate successfully
+    res = client.post("/auth/login", json={"password": "correct_pass"}, headers={"X-Forwarded-For": "10.0.0.1, 203.0.113.88"})
+    assert res.status_code == 200
+
+
 def test_proxy_spoofing_ignored_when_flag_off(monkeypatch):
     """When BRAIN_TRUST_PROXY is False, X-Forwarded-For is ignored and cannot be spoofed to evade lockout."""
     from src.auth import login_limiter
