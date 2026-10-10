@@ -20,6 +20,7 @@ from chromadb.config import Settings as ChromaSettings
 
 # Load root .env
 ROOT_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT_DIR))
 load_dotenv(ROOT_DIR / ".env")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -39,7 +40,11 @@ def migrate_sqlite_to_postgres(sqlite_path: Path, postgres_url: str) -> dict:
     sqlite_conn.row_factory = sqlite3.Row
 
     logger.info(f"Connecting to PostgreSQL: {postgres_url.split('@')[-1] if '@' in postgres_url else 'target'}")
-    pg_conn = psycopg.connect(postgres_url, row_factory=dict_row)
+    pg_conn = psycopg.connect(
+        postgres_url,
+        row_factory=dict_row,
+        prepare_threshold=None,
+    )
 
     stats = {
         "files_migrated": 0,
@@ -241,10 +246,14 @@ def migrate_chroma_to_qdrant(
     qdrant_url: str,
     qdrant_api_key: str,
     collection_name: str = "personal_brain",
+    embedder=None,
 ) -> dict:
-    """Extract all vectors and embeddings from ChromaDB and upload to Qdrant Cloud."""
+    """Extract chunks from ChromaDB, re-embed using FastEmbedder, and upload to Qdrant Cloud."""
     from qdrant_client import QdrantClient
-    from qdrant_client.models import Distance, PointStruct, VectorParams
+    from qdrant_client.models import Distance, PayloadSchemaType, PointStruct, VectorParams
+    from src.embeddings import FastEmbedder
+
+    embedder = embedder or FastEmbedder()
 
     logger.info(f"Connecting to ChromaDB at: {chroma_dir}")
     client_chroma = chromadb.PersistentClient(
@@ -253,26 +262,29 @@ def migrate_chroma_to_qdrant(
     )
     coll = client_chroma.get_collection("personal_brain")
     total_in_chroma = coll.count()
-    logger.info(f"Total vectors in ChromaDB collection 'personal_brain': {total_in_chroma}")
+    logger.info(f"Total chunks in ChromaDB collection 'personal_brain': {total_in_chroma}")
 
     if total_in_chroma == 0:
-        logger.warning("No vectors found in ChromaDB to migrate.")
+        logger.warning("No vectors/chunks found in ChromaDB to migrate.")
         return {"vectors_migrated": 0}
 
-    # Fetch all data including embeddings
-    data = coll.get(include=["embeddings", "documents", "metadatas"])
+    # Fetch all data documents and metadata
+    data = coll.get(include=["documents", "metadatas"])
     ids = data.get("ids") or []
-    embeddings = data.get("embeddings") or []
     documents = data.get("documents") or []
     metadatas = data.get("metadatas") or []
 
-    if not embeddings or len(embeddings) == 0:
-        raise ValueError("ChromaDB returned empty embeddings! Ensure collection has valid vectors.")
+    if not documents or len(documents) == 0:
+        raise ValueError("ChromaDB returned empty documents! Ensure collection has valid data.")
 
-    dimension = len(embeddings[0])
-    logger.info(f"Extracted {len(ids)} vectors with dimension {dimension} from ChromaDB")
+    # Re-embed all chunks with configured cloud embedder
+    logger.info(f"Re-embedding {len(documents)} chunks using {embedder.model_name}...")
+    embeddings = embedder.embed_documents(documents)
+    dimension = len(embeddings[0]) if embeddings else 768
+    logger.info(f"Generated {len(embeddings)} vectors with dimension {dimension}")
 
-    logger.info(f"Connecting to Qdrant Cloud at: {qdrant_url}")
+    masked_qdrant = qdrant_url.split("//")[-1].rstrip("/") if "//" in qdrant_url else qdrant_url
+    logger.info(f"Connecting to Qdrant Cloud at: {masked_qdrant}")
     qdrant = QdrantClient(url=qdrant_url, api_key=qdrant_api_key, timeout=60.0)
 
     # Re-create collection or ensure exists
@@ -285,7 +297,22 @@ def migrate_chroma_to_qdrant(
     else:
         logger.info(f"Qdrant Cloud collection '{collection_name}' already exists.")
 
-    # Prepare points
+    # Ensure 'source' keyword payload index exists
+    try:
+        qdrant.create_payload_index(
+            collection_name=collection_name,
+            field_name="source",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        logger.info(f"Ensured 'source' keyword payload index on collection '{collection_name}'")
+    except Exception as e:
+        err_msg = str(e).lower()
+        if "already exists" in err_msg or "already indexed" in err_msg:
+            pass
+        else:
+            logger.warning(f"Failed to create 'source' payload index: {e}")
+
+    # Prepare points with deterministic, idempotent UUIDs
     points = []
     for chunk_id, emb, doc, meta in zip(ids, embeddings, documents, metadatas):
         point_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id))
@@ -316,10 +343,11 @@ def migrate_chroma_to_qdrant(
     qdrant_count = qdrant.count(collection_name=collection_name, exact=True).count
     logger.info(f"Verified Qdrant Cloud point count: {qdrant_count}")
 
-    # Run live test query
+    # Run live test query with embedder
+    test_query_vec = embedder.embed_text(documents[0])
     test_res = qdrant.query_points(
         collection_name=collection_name,
-        query=embeddings[0],
+        query=test_query_vec,
         limit=2,
         with_payload=True,
     )
@@ -343,9 +371,13 @@ def main():
     parser.add_argument("--qdrant-collection", default="personal_brain", help="Qdrant collection name")
     parser.add_argument("--sqlite-path", default=str(ROOT_DIR / "data" / "brain.db"), help="Local SQLite path")
     parser.add_argument("--chroma-dir", default=str(ROOT_DIR / "data" / "chroma_db"), help="Local ChromaDB path")
+    parser.add_argument("--dry-run", action="store_true", help="Simulate migration: print counts and target hostnames without writing data")
     args = parser.parse_args()
 
     import os
+    from src.config import settings
+    from src.embeddings import FastEmbedder
+
     db_url = args.database_url or os.getenv("DATABASE_URL") or os.getenv("BRAIN_DATABASE_URL")
     qdrant_url = args.qdrant_url or os.getenv("QDRANT_URL") or os.getenv("BRAIN_QDRANT_URL")
     qdrant_key = args.qdrant_api_key or os.getenv("QDRANT_API_KEY") or os.getenv("BRAIN_QDRANT_API_KEY")
@@ -356,6 +388,56 @@ def main():
     if not qdrant_url or not qdrant_key:
         print("\n[ERROR] QDRANT_URL and QDRANT_API_KEY are required (pass flags or set in .env)")
         sys.exit(1)
+
+    target_pg_host = db_url.split("@")[-1] if "@" in db_url else "configured postgres"
+    target_qdrant_host = qdrant_url.split("//")[-1].rstrip("/") if "//" in qdrant_url else qdrant_url
+    embedder = FastEmbedder()
+
+    if args.dry_run:
+        print("\n" + "=" * 65)
+        print("PERSONAL AI BRAIN: CLOUD MIGRATION (DRY-RUN)")
+        print("=" * 65)
+        
+        # Read local SQLite counts
+        sqlite_p = Path(args.sqlite_path)
+        if not sqlite_p.exists():
+            print(f"[ERROR] SQLite database not found at {sqlite_p}")
+            sys.exit(1)
+            
+        sq_conn = sqlite3.connect(sqlite_p)
+        cur = sq_conn.cursor()
+        file_count = cur.execute("SELECT COUNT(*) FROM indexed_files").fetchone()[0]
+        bm_count = cur.execute("SELECT COUNT(*) FROM indexed_bookmarks").fetchone()[0]
+        sess_count = cur.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        msg_count = cur.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        sq_conn.close()
+
+        # Read local Chroma chunks count
+        client_chroma = chromadb.PersistentClient(path=str(args.chroma_dir))
+        coll = client_chroma.get_collection("personal_brain")
+        chunk_count = coll.count()
+
+        print("\nTarget Infrastructure:")
+        print(f"  • PostgreSQL Target:    {target_pg_host}")
+        print(f"  • Qdrant Cloud Target:  {target_qdrant_host} (collection: '{args.qdrant_collection}')")
+
+        print("\nEmbedder Configuration (Stored in Config):")
+        print(f"  • Model:                {embedder.model_name}")
+        print(f"  • Vector Dimension:     768")
+        print(f"  • Document Prefix:      {repr(embedder.doc_prefix)}")
+        print(f"  • Query Prefix:         {repr(embedder.query_prefix)}")
+
+        print("\nData Entities Scheduled for Migration:")
+        print(f"  • Indexed Files:        {file_count}")
+        print(f"  • Indexed Bookmarks:    {bm_count}")
+        print(f"  • Sessions:             {sess_count}")
+        print(f"  • Messages:             {msg_count}")
+        print(f"  • Total Chunks:         {chunk_count}")
+
+        print("\n" + "-" * 65)
+        print("[DRY-RUN] No data was written to PostgreSQL or Qdrant Cloud.")
+        print("=" * 65 + "\n")
+        return
 
     print("\n" + "=" * 60)
     print("PERSONAL AI BRAIN: CLOUD MIGRATION PIPELINE")
@@ -369,15 +451,16 @@ def main():
     print(f"✓ Migrated {pg_stats['sessions_migrated']} conversation sessions")
     print(f"✓ Migrated {pg_stats['messages_migrated']} conversation messages")
 
-    # 2. Migrate ChromaDB -> Qdrant Cloud
-    print("\n--- Phase 2: Migrating Vector Embeddings (ChromaDB -> Qdrant Cloud) ---")
+    # 2. Migrate ChromaDB -> Qdrant Cloud (Re-embedding with FastEmbedder)
+    print("\n--- Phase 2: Migrating Vector Embeddings (Re-embedding -> Qdrant Cloud) ---")
     vec_stats = migrate_chroma_to_qdrant(
         Path(args.chroma_dir),
         qdrant_url,
         qdrant_key,
         args.qdrant_collection,
+        embedder=embedder,
     )
-    print(f"✓ Migrated {vec_stats['vectors_migrated']} embedding vectors")
+    print(f"✓ Re-embedded & migrated {vec_stats['vectors_migrated']} embedding vectors")
     print(f"✓ Total points in Qdrant Cloud: {vec_stats['qdrant_total']}")
     print(f"✓ Live query test passed with similarity score {vec_stats['top_search_score']:.4f}")
 

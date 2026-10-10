@@ -28,7 +28,7 @@ class Settings(BaseSettings):
 
     # Groq Cloud LLM Settings
     GROQ_API_KEY: Optional[str] = None
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
     GROQ_TIMEOUT: float = 30.0
 
@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     QDRANT_API_KEY: Optional[str] = None
     QDRANT_COLLECTION: str = "personal_brain"
     EMBEDDING_PROVIDER: str = "auto"
+    FASTEMBED_MODEL: str = "nomic-ai/nomic-embed-text-v1.5-Q"
+    FASTEMBED_CACHE_DIR: Optional[Path] = None
+    EMBED_DOC_PREFIX: str = ""
+    EMBED_QUERY_PREFIX: str = ""
 
     # Single-User Authentication Gate
     APP_PASSWORD: Optional[str] = None
@@ -75,6 +79,13 @@ class Settings(BaseSettings):
             self.CHROMA_DIR = self.DATA_DIR / "chroma_db"
         if self.SQLITE_DB_PATH is None:
             self.SQLITE_DB_PATH = self.DATA_DIR / "brain.db"
+        if self.FASTEMBED_CACHE_DIR is None:
+            raw_cache = os.getenv("FASTEMBED_CACHE_DIR") or os.getenv("BRAIN_FASTEMBED_CACHE_DIR")
+            if raw_cache:
+                p = Path(raw_cache)
+                self.FASTEMBED_CACHE_DIR = p if p.is_absolute() else (self.BASE_DIR / p)
+            else:
+                self.FASTEMBED_CACHE_DIR = self.BASE_DIR / ".fastembed_cache"
         if not self.GROQ_API_KEY:
             self.GROQ_API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("BRAIN_GROQ_API_KEY") or None
         if not self.DATABASE_URL:

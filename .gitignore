@@ -5,6 +5,8 @@ __pycache__/
 *.pyo
 *.pyd
 *.log
+.fastembed_cache/
+scratch/
 
 # Local Database & Storage
 data/chroma_db/

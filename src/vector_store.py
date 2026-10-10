@@ -4,8 +4,6 @@ from pathlib import Path
 from typing import Any, Optional
 import uuid
 
-import chromadb
-from chromadb.config import Settings as ChromaSettings
 
 from src.chunker import Chunk
 from src.config import settings
@@ -69,7 +67,10 @@ class ChromaVectorStore(BaseVectorStore):
         self.persist_dir.mkdir(parents=True, exist_ok=True)
         self.collection_name = collection_name or settings.COLLECTION_NAME
 
-    def _get_client(self) -> chromadb.PersistentClient:
+    def _get_client(self):
+        import chromadb
+        from chromadb.config import Settings as ChromaSettings
+
         return chromadb.PersistentClient(
             path=str(self.persist_dir),
             settings=ChromaSettings(anonymized_telemetry=False, is_persistent=True),

@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 import hashlib
 import logging
 import math
+from pathlib import Path
 from typing import Optional
 # pyrefly: ignore [missing-import]
 import ollama
@@ -80,19 +81,28 @@ class OllamaEmbedder(BaseEmbedder):
 
 
 class FastEmbedder(BaseEmbedder):
-    """Generates embeddings using CPU-based FastEmbed (nomic-ai/nomic-embed-text-v1.5, 768 dimensions).
+    """Generates embeddings using CPU-based FastEmbed (default: nomic-ai/nomic-embed-text-v1.5-Q, 768 dimensions).
     Ideal for cloud deployments (Render) where Ollama is not running on the container host.
     """
 
-    def __init__(self, model_name: str = "nomic-ai/nomic-embed-text-v1.5"):
-        self.model_name = model_name
+    def __init__(
+        self,
+        model_name: Optional[str] = None,
+        doc_prefix: Optional[str] = None,
+        query_prefix: Optional[str] = None,
+        cache_dir: Optional[Path | str] = None,
+    ):
+        self.model_name = model_name or getattr(settings, "FASTEMBED_MODEL", "nomic-ai/nomic-embed-text-v1.5-Q")
+        self.doc_prefix = doc_prefix if doc_prefix is not None else getattr(settings, "EMBED_DOC_PREFIX", "")
+        self.query_prefix = query_prefix if query_prefix is not None else getattr(settings, "EMBED_QUERY_PREFIX", "")
+        self.cache_dir = Path(cache_dir or getattr(settings, "FASTEMBED_CACHE_DIR", settings.BASE_DIR / ".fastembed_cache"))
         self._model = None
 
     @property
     def model(self):
         if self._model is None:
             from fastembed import TextEmbedding
-            self._model = TextEmbedding(model_name=self.model_name)
+            self._model = TextEmbedding(model_name=self.model_name, cache_dir=str(self.cache_dir))
         return self._model
 
     def is_available(self) -> bool:
@@ -103,13 +113,15 @@ class FastEmbedder(BaseEmbedder):
 
     def embed_text(self, text: str) -> list[float]:
         clean_text = text.strip() or " "
-        embeddings = list(self.model.embed([clean_text]))
+        formatted = f"{self.query_prefix}{clean_text}" if self.query_prefix else clean_text
+        embeddings = list(self.model.embed([formatted]))
         return [float(x) for x in embeddings[0]]
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        embeddings = list(self.model.embed(texts))
+        formatted = [f"{self.doc_prefix}{t}" for t in texts] if self.doc_prefix else texts
+        embeddings = list(self.model.embed(formatted))
         return [[float(x) for x in vec] for vec in embeddings]
 
 
