@@ -1,10 +1,18 @@
 import logging
 from typing import Literal, Optional
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
-from src.auth import create_access_token, is_auth_enabled, require_auth, verify_password, verify_token
+from src.auth import (
+    create_access_token,
+    is_auth_enabled,
+    login_limiter,
+    require_auth,
+    validate_security_settings,
+    verify_password,
+    verify_token,
+)
 
 from src.config import settings
 from src.db import Database, get_database
@@ -24,16 +32,24 @@ from src.vector_store import BaseVectorStore, ChromaVectorStore, QdrantVectorSto
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+is_prod = getattr(settings, "BRAIN_ENV", "development").lower() == "production"
+
 app = FastAPI(
     title="Personal AI Brain API",
     description="Local-first grounded RAG backend with optional Groq Cloud fallback",
     version="0.3.0",
+    docs_url=None if is_prod else "/docs",
+    redoc_url=None if is_prod else "/redoc",
+    openapi_url=None if is_prod else "/openapi.json",
 )
 
-# Enable CORS for local development & frontend container
+# Validate security settings on startup
+validate_security_settings()
+
+# Enable CORS for configured origins (restricted to UI origin in production)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -169,13 +185,37 @@ _llm_local = get_llm(provider="local")
     response_model=LoginResponse,
     summary="Login to private brain instance",
 )
-def login(request: LoginRequest) -> LoginResponse:
-    """Validate password and issue an authenticated session bearer token."""
+def login(request: LoginRequest, raw_request: Request) -> LoginResponse:
+    """Validate password and issue an authenticated session bearer token.
+    Throttles failed login attempts per client IP (lockout after 5 failures in 60s).
+    """
+    client_ip = raw_request.client.host if raw_request.client else "127.0.0.1"
+
+    is_locked, retry_after = login_limiter.is_locked(client_ip)
+    if is_locked:
+        logger.warning(f"Login rate limit lockout for IP: {client_ip} (retry_after={retry_after}s)")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many failed login attempts. Please wait {retry_after} seconds before retrying.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     if is_auth_enabled() and not verify_password(request.password):
+        login_limiter.record_failure(client_ip)
+        is_now_locked, retry_after = login_limiter.is_locked(client_ip)
+        if is_now_locked:
+            logger.warning(f"Login triggered lockout for IP: {client_ip} (retry_after={retry_after}s)")
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many failed login attempts. Please wait {retry_after} seconds before retrying.",
+                headers={"Retry-After": str(retry_after)},
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid password",
         )
+
+    login_limiter.record_success(client_ip)
     token_data = create_access_token()
     return LoginResponse(**token_data)
 
@@ -437,7 +477,7 @@ def health_check() -> HealthResponse:
         status="healthy" if overall_ok else "degraded",
         ollama_connected=ollama_ok,
         groq_configured=groq_ok,
-        embedding_model=settings.EMBEDDING_MODEL,
+        embedding_model=getattr(getattr(_retrieval_service, "embedder", None), "model_name", settings.EMBEDDING_MODEL),
         llm_model=settings.LLM_MODEL,
         groq_model=settings.GROQ_MODEL,
         indexed_files=stats.get("indexed_files", 0),

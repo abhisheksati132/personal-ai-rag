@@ -157,13 +157,25 @@ def get_embedder(use_mock: bool = False, provider: Optional[str] = None) -> Base
     if use_mock or prov == "mock":
         return MockEmbedder()
     if prov == "fastembed":
-        return FastEmbedder()
+        fe = FastEmbedder()
+        logger.info(
+            f"Configured FastEmbedder (model: '{fe.model_name}', "
+            f"doc_prefix: '{fe.doc_prefix}', query_prefix: '{fe.query_prefix}')"
+        )
+        return fe
     if prov == "ollama":
-        return OllamaEmbedder()
+        oe = OllamaEmbedder()
+        logger.info(f"Configured OllamaEmbedder (model: '{oe.model_name}')")
+        return oe
 
     # 'auto': Try Ollama first; if unavailable, seamlessly fall back to FastEmbedder
     ollama_embedder = OllamaEmbedder()
     if ollama_embedder.is_available():
+        logger.info(f"Ollama available for embeddings; using OllamaEmbedder (model: '{ollama_embedder.model_name}')")
         return ollama_embedder
-    logger.info("Ollama unavailable for embeddings; defaulting to FastEmbedder (nomic-ai/nomic-embed-text-v1.5)")
-    return FastEmbedder()
+    fe = FastEmbedder()
+    logger.info(
+        f"Ollama unavailable for embeddings; defaulting to FastEmbedder "
+        f"(model: '{fe.model_name}', doc_prefix: '{fe.doc_prefix}', query_prefix: '{fe.query_prefix}')"
+    )
+    return fe

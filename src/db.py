@@ -288,6 +288,7 @@ class Database:
                     file_name = excluded.file_name,
                     file_size = excluded.file_size,
                     mtime = excluded.mtime,
+                    chunk_count = 0,
                     indexed_at = excluded.indexed_at,
                     status = 'failed',
                     error_message = excluded.error_message
@@ -350,6 +351,7 @@ class Database:
                     bookmark_id = excluded.bookmark_id,
                     title = excluded.title,
                     folder = excluded.folder,
+                    chunk_count = 0,
                     fetched_at = excluded.fetched_at,
                     indexed_at = excluded.indexed_at,
                     status = 'failed',
@@ -434,7 +436,7 @@ class Database:
                     COUNT(*) as total_files,
                     COALESCE(SUM(CASE WHEN status = 'indexed' THEN 1 ELSE 0 END), 0) as indexed_files,
                     COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed_files,
-                    COALESCE(SUM(chunk_count), 0) as total_chunks,
+                    COALESCE(SUM(CASE WHEN status = 'indexed' THEN chunk_count ELSE 0 END), 0) as total_chunks,
                     COALESCE(SUM(file_size), 0) as total_bytes,
                     MAX(indexed_at) as last_indexed_at
                 FROM indexed_files
@@ -449,7 +451,7 @@ class Database:
                     COUNT(*) as total_bookmarks,
                     COALESCE(SUM(CASE WHEN status = 'indexed' THEN 1 ELSE 0 END), 0) as indexed_bookmarks,
                     COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed_bookmarks,
-                    COALESCE(SUM(chunk_count), 0) as bookmark_chunks,
+                    COALESCE(SUM(CASE WHEN status = 'indexed' THEN chunk_count ELSE 0 END), 0) as bookmark_chunks,
                     MAX(indexed_at) as last_bookmark_indexed_at
                 FROM indexed_bookmarks
                 """,

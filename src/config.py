@@ -57,9 +57,19 @@ class Settings(BaseSettings):
     EMBED_DOC_PREFIX: str = ""
     EMBED_QUERY_PREFIX: str = ""
 
-    # Single-User Authentication Gate
+    # Single-User Authentication Gate & Security Hardening
     APP_PASSWORD: Optional[str] = None
     AUTH_SECRET_KEY: Optional[str] = None
+    AUTH_TOKEN_EXPIRE_SECONDS: int = 30 * 24 * 3600
+    BRAIN_ENV: str = "development"
+    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        if not self.CORS_ORIGINS or self.CORS_ORIGINS.strip() == "*":
+            return ["*"]
+        origins = [orig.strip() for orig in self.CORS_ORIGINS.split(",") if orig.strip()]
+        return origins if origins else ["*"]
 
     # Chrome Bookmarks Settings
     CHROME_BOOKMARKS_PATH: Optional[Path] = None

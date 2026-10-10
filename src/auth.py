@@ -15,8 +15,64 @@ logger = logging.getLogger(__name__)
 DEFAULT_TOKEN_EXPIRY = 30 * 24 * 3600
 
 
+class LoginRateLimiter:
+    """In-memory rate limiter tracking failed login attempts per client IP.
+    Default: 5 failures within 60 seconds triggers a temporary lockout with HTTP 429.
+    """
+
+    def __init__(self, max_failures: int = 5, window_seconds: float = 60.0):
+        self.max_failures = max_failures
+        self.window_seconds = window_seconds
+        self._failures: dict[str, list[float]] = {}
+
+    def is_locked(self, client_ip: str) -> tuple[bool, int]:
+        """Check if an IP is locked out.
+        Returns (is_locked, retry_after_seconds).
+        """
+        now = time.time()
+        attempts = self._failures.get(client_ip, [])
+        valid_attempts = [t for t in attempts if now - t < self.window_seconds]
+        self._failures[client_ip] = valid_attempts
+
+        if len(valid_attempts) >= self.max_failures:
+            earliest = valid_attempts[0]
+            retry_after = max(1, int(self.window_seconds - (now - earliest)))
+            return True, retry_after
+        return False, 0
+
+    def record_failure(self, client_ip: str) -> None:
+        """Record a failed login attempt for a client IP."""
+        now = time.time()
+        if client_ip not in self._failures:
+            self._failures[client_ip] = []
+        self._failures[client_ip].append(now)
+
+    def record_success(self, client_ip: str) -> None:
+        """Clear failed attempts upon a successful login."""
+        self._failures.pop(client_ip, None)
+
+    def reset(self) -> None:
+        """Reset all rate limiter state (useful for tests)."""
+        self._failures.clear()
+
+
+login_limiter = LoginRateLimiter(max_failures=5, window_seconds=60.0)
+
+
+def validate_security_settings() -> None:
+    """Audit security settings on startup."""
+    is_prod = getattr(settings, "BRAIN_ENV", "development").lower() == "production"
+    if is_prod:
+        if not settings.APP_PASSWORD or not settings.APP_PASSWORD.strip():
+            logger.error("CRITICAL SECURITY WARNING: BRAIN_ENV is 'production' but APP_PASSWORD is empty. Endpoints are unprotected!")
+        if not settings.AUTH_SECRET_KEY or not settings.AUTH_SECRET_KEY.strip():
+            logger.warning("AUTH_SECRET_KEY is unset in production. Deriving token signing key from SHA-256(APP_PASSWORD). Set AUTH_SECRET_KEY to decouple.")
+
+
 def _get_signing_key() -> bytes:
-    """Derive HMAC signing key from secret or app password."""
+    """Derive HMAC signing key from secret or app password.
+    Ensures tokens survive server restarts when AUTH_SECRET_KEY or APP_PASSWORD is configured.
+    """
     if settings.AUTH_SECRET_KEY and settings.AUTH_SECRET_KEY.strip():
         return settings.AUTH_SECRET_KEY.strip().encode("utf-8")
     if settings.APP_PASSWORD and settings.APP_PASSWORD.strip():
@@ -30,20 +86,21 @@ def is_auth_enabled() -> bool:
 
 
 def verify_password(password: str) -> bool:
-    """Verify input password against configured APP_PASSWORD using constant-time comparison."""
+    """Verify input password against configured APP_PASSWORD using constant-time comparison of SHA-256 digests."""
     if not is_auth_enabled():
         return True
     if not password:
         return False
-    configured = settings.APP_PASSWORD.strip().encode("utf-8")
-    candidate = password.strip().encode("utf-8")
-    return secrets.compare_digest(candidate, configured)
+    configured_hash = hashlib.sha256(settings.APP_PASSWORD.strip().encode("utf-8")).digest()
+    candidate_hash = hashlib.sha256(password.strip().encode("utf-8")).digest()
+    return secrets.compare_digest(candidate_hash, configured_hash)
 
 
-def create_access_token(expires_in: int = DEFAULT_TOKEN_EXPIRY) -> dict[str, Any]:
+def create_access_token(expires_in: Optional[int] = None) -> dict[str, Any]:
     """Create a signed, timestamped session bearer token."""
+    ttl = expires_in if expires_in is not None else getattr(settings, "AUTH_TOKEN_EXPIRE_SECONDS", DEFAULT_TOKEN_EXPIRY)
     now = time.time()
-    expires_at = now + expires_in
+    expires_at = now + ttl
     nonce = secrets.token_hex(8)
     payload = f"{int(expires_at)}:{nonce}"
     sig = hmac.new(_get_signing_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
