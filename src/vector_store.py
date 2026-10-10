@@ -191,10 +191,10 @@ class QdrantVectorStore(BaseVectorStore):
         dimension: int = 768,
     ):
         from qdrant_client import QdrantClient
-        from qdrant_client.models import Distance, VectorParams
+        from qdrant_client.models import Distance, PayloadSchemaType, VectorParams
 
-        self.url = url or settings.QDRANT_URL
-        self.api_key = api_key or settings.QDRANT_API_KEY
+        self.url = url if url is not None else settings.QDRANT_URL
+        self.api_key = api_key if api_key is not None else settings.QDRANT_API_KEY
         self.collection_name = collection_name or settings.QDRANT_COLLECTION
         self.dimension = dimension
 
@@ -210,6 +210,20 @@ class QdrantVectorStore(BaseVectorStore):
                 vectors_config=VectorParams(size=self.dimension, distance=Distance.COSINE),
             )
             logger.info(f"Created Qdrant collection: {self.collection_name} (dim={self.dimension}, distance=Cosine)")
+
+        # Ensure 'source' keyword payload index exists for filtering / delete_by_source
+        try:
+            self.client.create_payload_index(
+                collection_name=self.collection_name,
+                field_name="source",
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "already exists" in err_msg or "already indexed" in err_msg:
+                pass
+            else:
+                logger.warning(f"Failed to create 'source' payload index on Qdrant collection {self.collection_name}: {e}")
 
     def add_chunks(self, chunks: list[Chunk], embeddings: list[list[float]]) -> int:
         """Add or update document chunks with their corresponding embedding vectors."""

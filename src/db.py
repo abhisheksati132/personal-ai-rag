@@ -46,7 +46,11 @@ class Database:
             import psycopg
             from psycopg.rows import dict_row
 
-            conn = psycopg.connect(self.database_url, row_factory=dict_row)
+            conn = psycopg.connect(
+                self.database_url,
+                row_factory=dict_row,
+                prepare_threshold=None,
+            )
             try:
                 yield conn
                 conn.commit()
