@@ -7,7 +7,11 @@ export function getApiBase(): string {
       return custom.trim().replace(/\/+$/, '');
     }
   }
-  return (process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+  let base = (process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+  if (base && !base.startsWith('http://') && !base.startsWith('https://')) {
+    base = `https://${base}`;
+  }
+  return base;
 }
 
 export class ApiError extends Error {
@@ -96,6 +100,10 @@ export async function login(password: string): Promise<{ token: string; expires_
     if (!res.ok) {
       if (res.status === 401) {
         throw new ApiError('Incorrect password. Access denied.', 401);
+      }
+      if (res.status === 429) {
+        const body = await res.json().catch(() => null);
+        throw new ApiError(body?.detail || 'Too many failed login attempts. Please wait 60 seconds.', 429);
       }
       throw new ApiError(`Login failed: ${res.statusText}`, res.status);
     }

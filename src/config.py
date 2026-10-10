@@ -68,7 +68,14 @@ class Settings(BaseSettings):
     def allowed_origins(self) -> list[str]:
         if not self.CORS_ORIGINS or self.CORS_ORIGINS.strip() == "*":
             return ["*"]
-        origins = [orig.strip() for orig in self.CORS_ORIGINS.split(",") if orig.strip()]
+        origins: list[str] = []
+        for orig in self.CORS_ORIGINS.split(","):
+            o = orig.strip()
+            if o:
+                origins.append(o)
+                if not (o.startswith("http://") or o.startswith("https://")):
+                    origins.append(f"https://{o}")
+                    origins.append(f"http://{o}")
         return origins if origins else ["*"]
 
     # Chrome Bookmarks Settings
