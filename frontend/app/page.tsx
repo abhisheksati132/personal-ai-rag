@@ -170,6 +170,7 @@ export default function Home() {
             onSessionCreated={handleSessionCreated}
             onSessionsUpdated={refreshSessions}
             onIndexedFilesCountChange={refreshSystemStatus}
+            ollamaConnected={ollamaConnected}
           />
         ) : (
           <FilesView

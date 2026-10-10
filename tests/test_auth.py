@@ -109,6 +109,83 @@ def test_login_rate_limiting_lockout(monkeypatch):
     assert res.status_code == 200
 
 
+def test_proxy_rate_limiting_isolated_ips(monkeypatch):
+    """When BRAIN_TRUST_PROXY is True, different forwarded IPs are isolated into separate buckets."""
+    from src.auth import login_limiter
+    login_limiter.reset()
+
+    monkeypatch.setattr(settings, "APP_PASSWORD", "correct_pass")
+    monkeypatch.setattr(settings, "BRAIN_TRUST_PROXY", True)
+    client = TestClient(app)
+
+    ip_attacker = "203.0.113.10"
+    ip_victim = "198.51.100.25"
+
+    # Attacker fails 5 times -> gets locked out
+    for _ in range(5):
+        res = client.post("/auth/login", json={"password": "bad_password"}, headers={"X-Forwarded-For": ip_attacker})
+    assert res.status_code == 429
+
+    # Attacker remains locked
+    res = client.post("/auth/login", json={"password": "bad_password"}, headers={"X-Forwarded-For": ip_attacker})
+    assert res.status_code == 429
+
+    # Legitimate user from different IP is NOT locked out
+    res = client.post("/auth/login", json={"password": "correct_pass"}, headers={"X-Forwarded-For": ip_victim})
+    assert res.status_code == 200
+
+
+def test_proxy_spoofing_ignored_when_flag_off(monkeypatch):
+    """When BRAIN_TRUST_PROXY is False, X-Forwarded-For is ignored and cannot be spoofed to evade lockout."""
+    from src.auth import login_limiter
+    login_limiter.reset()
+
+    monkeypatch.setattr(settings, "APP_PASSWORD", "correct_pass")
+    monkeypatch.setattr(settings, "BRAIN_TRUST_PROXY", False)
+    client = TestClient(app)
+
+    # Attacker tries to rotate spoofed headers, but limiter keys on direct socket client IP
+    for i in range(5):
+        res = client.post("/auth/login", json={"password": "bad_password"}, headers={"X-Forwarded-For": f"10.0.0.{i}"})
+
+    assert res.status_code == 429
+    # Further attempt with another new spoofed header is still locked out
+    res = client.post("/auth/login", json={"password": "bad_password"}, headers={"X-Forwarded-For": "10.0.0.99"})
+    assert res.status_code == 429
+
+
+def test_escalating_lockouts(monkeypatch):
+    """Rate limiter escalates lockout duration on repeat offenses (60s -> 300s -> 900s)."""
+    from src.auth import login_limiter
+    login_limiter.reset()
+
+    client_ip = "192.0.2.1"
+
+    # 1st tier: 5 failures -> 60s
+    for _ in range(4):
+        locked, _ = login_limiter.record_failure(client_ip)
+        assert not locked
+    locked, duration = login_limiter.record_failure(client_ip)
+    assert locked
+    assert duration == 60
+
+    # Simulate lockout expired: record 5 more failures -> 300s (5 min)
+    for _ in range(4):
+        locked, _ = login_limiter.record_failure(client_ip)
+        assert not locked
+    locked, duration = login_limiter.record_failure(client_ip)
+    assert locked
+    assert duration == 300
+
+    # Simulate lockout expired: record 5 more failures -> 900s (15 min)
+    for _ in range(4):
+        locked, _ = login_limiter.record_failure(client_ip)
+        assert not locked
+    locked, duration = login_limiter.record_failure(client_ip)
+    assert locked
+    assert duration == 900
+
+
 def test_constant_time_password_verification(monkeypatch):
     """verify_password correctly validates matching and non-matching passwords."""
     monkeypatch.setattr(settings, "APP_PASSWORD", "super_secure_vault_123")

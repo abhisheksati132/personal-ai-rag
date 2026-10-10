@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     AUTH_SECRET_KEY: Optional[str] = None
     AUTH_TOKEN_EXPIRE_SECONDS: int = 30 * 24 * 3600
     BRAIN_ENV: str = "development"
+    BRAIN_TRUST_PROXY: bool = False
     CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     @property

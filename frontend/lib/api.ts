@@ -4,12 +4,40 @@ export function getApiBase(): string {
   if (typeof window !== 'undefined') {
     const custom = localStorage.getItem('brain_api_url');
     if (custom && custom.trim()) {
-      return custom.trim().replace(/\/+$/, '');
+      const trimmed = custom.trim().replace(/\/+$/, '');
+      if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+        console.error(`[Brain API] Custom URL missing scheme: '${trimmed}'. URL must explicitly begin with https:// or http://`);
+      }
+      return trimmed;
     }
   }
-  let base = (process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
-  if (base && !base.startsWith('http://') && !base.startsWith('https://')) {
-    base = `https://${base}`;
+  const raw = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+  const base = raw.trim().replace(/\/+$/, '');
+  if (!base.startsWith('http://') && !base.startsWith('https://')) {
+    console.error(`[Brain API Configuration Error] NEXT_PUBLIC_API_URL ('${base}') has no protocol scheme. URLs must explicitly begin with 'https://' or 'http://'.`);
+  }
+  return base;
+}
+
+export function validateApiUrl(url: string): { valid: boolean; error?: string } {
+  if (!url || !url.trim()) {
+    return { valid: false, error: 'API URL cannot be empty' };
+  }
+  const trimmed = url.trim();
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+    return {
+      valid: false,
+      error: `Misconfigured API URL '${trimmed}': Missing protocol scheme. Must explicitly start with 'https://' or 'http://'.`,
+    };
+  }
+  return { valid: true };
+}
+
+export function getValidatedApiBase(): string {
+  const base = getApiBase();
+  const validation = validateApiUrl(base);
+  if (!validation.valid) {
+    throw new ApiError(validation.error!, 0, true);
   }
   return base;
 }
@@ -69,8 +97,8 @@ function handleAuthResponse(res: Response): void {
 // --- Authentication Functions ---
 
 export async function checkAuthStatus(): Promise<{ auth_enabled: boolean; authenticated: boolean }> {
-  const apiBase = getApiBase();
   try {
+    const apiBase = getValidatedApiBase();
     const res = await fetch(`${apiBase}/auth/status`, {
       method: 'GET',
       headers: getAuthHeaders(),
@@ -86,7 +114,7 @@ export async function checkAuthStatus(): Promise<{ auth_enabled: boolean; authen
 }
 
 export async function login(password: string): Promise<{ token: string; expires_at: number }> {
-  const apiBase = getApiBase();
+  const apiBase = getValidatedApiBase();
   try {
     const res = await fetch(`${apiBase}/auth/login`, {
       method: 'POST',
@@ -126,7 +154,7 @@ export function logout(): void {
 // --- Data Endpoints ---
 
 export async function checkHealth(): Promise<HealthResponse> {
-  const apiBase = getApiBase();
+  const apiBase = getValidatedApiBase();
   try {
     const res = await fetch(`${apiBase}/health`, {
       method: 'GET',
@@ -144,7 +172,7 @@ export async function checkHealth(): Promise<HealthResponse> {
 }
 
 export async function fetchStats(): Promise<StatsResponse> {
-  const apiBase = getApiBase();
+  const apiBase = getValidatedApiBase();
   try {
     const res = await fetch(`${apiBase}/stats`, {
       method: 'GET',
@@ -163,7 +191,7 @@ export async function fetchStats(): Promise<StatsResponse> {
 }
 
 export async function fetchFiles(): Promise<IndexedFile[]> {
-  const apiBase = getApiBase();
+  const apiBase = getValidatedApiBase();
   try {
     const res = await fetch(`${apiBase}/files`, {
       method: 'GET',
@@ -188,7 +216,7 @@ export async function postQuery(
   provider: 'local' | 'cloud' = 'local',
   session_id?: string
 ): Promise<QueryResponse> {
-  const apiBase = getApiBase();
+  const apiBase = getValidatedApiBase();
   try {
     const res = await fetch(`${apiBase}/query`, {
       method: 'POST',
@@ -233,7 +261,7 @@ export async function postQuery(
 }
 
 export async function fetchSessions(): Promise<import('./types').SessionItem[]> {
-  const apiBase = getApiBase();
+  const apiBase = getValidatedApiBase();
   try {
     const res = await fetch(`${apiBase}/sessions`, {
       method: 'GET',
@@ -252,7 +280,7 @@ export async function fetchSessions(): Promise<import('./types').SessionItem[]> 
 }
 
 export async function createSession(title?: string): Promise<import('./types').SessionItem> {
-  const apiBase = getApiBase();
+  const apiBase = getValidatedApiBase();
   try {
     const res = await fetch(`${apiBase}/sessions`, {
       method: 'POST',
@@ -271,7 +299,7 @@ export async function createSession(title?: string): Promise<import('./types').S
 }
 
 export async function fetchSession(sessionId: string): Promise<import('./types').SessionDetail> {
-  const apiBase = getApiBase();
+  const apiBase = getValidatedApiBase();
   try {
     const res = await fetch(`${apiBase}/sessions/${sessionId}`, {
       method: 'GET',
@@ -290,7 +318,7 @@ export async function fetchSession(sessionId: string): Promise<import('./types')
 }
 
 export async function renameSession(sessionId: string, title: string): Promise<void> {
-  const apiBase = getApiBase();
+  const apiBase = getValidatedApiBase();
   try {
     const res = await fetch(`${apiBase}/sessions/${sessionId}`, {
       method: 'PATCH',
@@ -308,7 +336,7 @@ export async function renameSession(sessionId: string, title: string): Promise<v
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  const apiBase = getApiBase();
+  const apiBase = getValidatedApiBase();
   try {
     const res = await fetch(`${apiBase}/sessions/${sessionId}`, {
       method: 'DELETE',

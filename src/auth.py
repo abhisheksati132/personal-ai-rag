@@ -14,49 +14,86 @@ logger = logging.getLogger(__name__)
 # Token lifetime: 30 days in seconds
 DEFAULT_TOKEN_EXPIRY = 30 * 24 * 3600
 
+LOCKOUT_TIERS = [60, 300, 900]  # Escalating lockout durations: 60s (1m), 300s (5m), 900s (15m)
+
 
 class LoginRateLimiter:
     """In-memory rate limiter tracking failed login attempts per client IP.
-    Default: 5 failures within 60 seconds triggers a temporary lockout with HTTP 429.
+    Features:
+    - 5 failures within 60s triggers temporary lockout with HTTP 429
+    - Escalating lockouts: 1st offense = 60s, 2nd = 300s (5m), 3rd+ = 900s (15m)
+    - IP isolation (separate buckets per client IP)
     """
 
     def __init__(self, max_failures: int = 5, window_seconds: float = 60.0):
         self.max_failures = max_failures
         self.window_seconds = window_seconds
         self._failures: dict[str, list[float]] = {}
+        self._lockouts: dict[str, tuple[float, int]] = {}  # ip -> (locked_until, tier_index)
 
     def is_locked(self, client_ip: str) -> tuple[bool, int]:
-        """Check if an IP is locked out.
+        """Check if an IP is currently locked out.
         Returns (is_locked, retry_after_seconds).
+        """
+        now = time.time()
+        if client_ip in self._lockouts:
+            locked_until, _ = self._lockouts[client_ip]
+            if now < locked_until:
+                return True, max(1, int(locked_until - now))
+        return False, 0
+
+    def record_failure(self, client_ip: str) -> tuple[bool, int]:
+        """Record a failed attempt. If threshold exceeded, triggers escalating lockout.
+        Returns (is_now_locked, lockout_duration_seconds).
         """
         now = time.time()
         attempts = self._failures.get(client_ip, [])
         valid_attempts = [t for t in attempts if now - t < self.window_seconds]
+        valid_attempts.append(now)
         self._failures[client_ip] = valid_attempts
 
         if len(valid_attempts) >= self.max_failures:
-            earliest = valid_attempts[0]
-            retry_after = max(1, int(self.window_seconds - (now - earliest)))
-            return True, retry_after
+            current_tier = 0
+            if client_ip in self._lockouts:
+                _, last_tier = self._lockouts[client_ip]
+                current_tier = min(last_tier + 1, len(LOCKOUT_TIERS) - 1)
+
+            lockout_duration = LOCKOUT_TIERS[current_tier]
+            locked_until = now + lockout_duration
+            self._lockouts[client_ip] = (locked_until, current_tier)
+            self._failures[client_ip] = []
+            return True, lockout_duration
+
         return False, 0
 
-    def record_failure(self, client_ip: str) -> None:
-        """Record a failed login attempt for a client IP."""
-        now = time.time()
-        if client_ip not in self._failures:
-            self._failures[client_ip] = []
-        self._failures[client_ip].append(now)
-
     def record_success(self, client_ip: str) -> None:
-        """Clear failed attempts upon a successful login."""
+        """Clear failed attempts and reset lockout tier upon a successful login."""
         self._failures.pop(client_ip, None)
+        self._lockouts.pop(client_ip, None)
 
     def reset(self) -> None:
         """Reset all rate limiter state (useful for tests)."""
         self._failures.clear()
+        self._lockouts.clear()
 
 
 login_limiter = LoginRateLimiter(max_failures=5, window_seconds=60.0)
+
+
+def get_client_ip(request: Any) -> str:
+    """Extract client IP safely.
+    When BRAIN_TRUST_PROXY is True, reads the original client IP from X-Forwarded-For.
+    When BRAIN_TRUST_PROXY is False (default), ignores X-Forwarded-For to prevent header spoofing,
+    using request.client.host directly.
+    """
+    if getattr(settings, "BRAIN_TRUST_PROXY", False):
+        forwarded = getattr(request, "headers", {}).get("X-Forwarded-For")
+        if forwarded:
+            client_ip = forwarded.split(",")[0].strip()
+            if client_ip:
+                return client_ip
+    client = getattr(request, "client", None)
+    return client.host if client else "127.0.0.1"
 
 
 def validate_security_settings() -> None:

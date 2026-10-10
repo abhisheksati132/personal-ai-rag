@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from src.auth import (
     create_access_token,
+    get_client_ip,
     is_auth_enabled,
     login_limiter,
     require_auth,
@@ -189,7 +190,7 @@ def login(request: LoginRequest, raw_request: Request) -> LoginResponse:
     """Validate password and issue an authenticated session bearer token.
     Throttles failed login attempts per client IP (lockout after 5 failures in 60s).
     """
-    client_ip = raw_request.client.host if raw_request.client else "127.0.0.1"
+    client_ip = get_client_ip(raw_request)
 
     is_locked, retry_after = login_limiter.is_locked(client_ip)
     if is_locked:
@@ -201,14 +202,13 @@ def login(request: LoginRequest, raw_request: Request) -> LoginResponse:
         )
 
     if is_auth_enabled() and not verify_password(request.password):
-        login_limiter.record_failure(client_ip)
-        is_now_locked, retry_after = login_limiter.is_locked(client_ip)
+        is_now_locked, lockout_sec = login_limiter.record_failure(client_ip)
         if is_now_locked:
-            logger.warning(f"Login triggered lockout for IP: {client_ip} (retry_after={retry_after}s)")
+            logger.warning(f"Login triggered lockout for IP: {client_ip} (lockout={lockout_sec}s)")
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Too many failed login attempts. Please wait {retry_after} seconds before retrying.",
-                headers={"Retry-After": str(retry_after)},
+                detail=f"Too many failed login attempts. Please wait {lockout_sec} seconds before retrying.",
+                headers={"Retry-After": str(lockout_sec)},
             )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

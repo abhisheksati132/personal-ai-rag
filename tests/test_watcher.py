@@ -49,6 +49,19 @@ class TestFileFiltering(unittest.TestCase):
         self.assertFalse(is_supported_document(Path("download.pdf.crdownload")))
 
 
+def wait_for_condition(predicate, timeout=4.0, interval=0.03):
+    """Wait up to timeout seconds for predicate to return truthy value."""
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            if predicate():
+                return True
+        except Exception:
+            pass
+        time.sleep(interval)
+    return predicate()
+
+
 class TestFileChangeHandler(unittest.TestCase):
     """Test debounce and event dispatching in FileChangeHandler."""
 
@@ -77,7 +90,7 @@ class TestFileChangeHandler(unittest.TestCase):
             self.pipeline.ingest_file.assert_not_called()
 
             # Wait for debounce to fire
-            time.sleep(0.2)
+            wait_for_condition(lambda: self.pipeline.ingest_file.call_count == 1, timeout=3.0)
 
             # Ingest should have been called exactly once
             self.assertEqual(self.pipeline.ingest_file.call_count, 1)
@@ -89,8 +102,10 @@ class TestFileChangeHandler(unittest.TestCase):
         fake_path = Path("c:/docs/deleted_document.pdf")
         self.handler.on_deleted(FileDeletedEvent(str(fake_path)))
 
-        # Deletion runs in background thread, allow brief time
-        time.sleep(0.05)
+        wait_for_condition(
+            lambda: self.pipeline.vector_store.delete_by_source.called and self.pipeline.db.remove_file.called,
+            timeout=3.0,
+        )
 
         self.pipeline.vector_store.delete_by_source.assert_called_with(str(fake_path.resolve()))
         self.pipeline.db.remove_file.assert_called_with(str(fake_path.resolve()))
@@ -107,11 +122,11 @@ class TestFileChangeHandler(unittest.TestCase):
             self.handler.on_moved(event)
 
             # Verify old path purged
-            time.sleep(0.05)
+            wait_for_condition(lambda: self.pipeline.vector_store.delete_by_source.called, timeout=3.0)
             self.pipeline.vector_store.delete_by_source.assert_called_with(str(src_path.resolve()))
 
             # Verify new path scheduled for debounce
-            time.sleep(0.2)
+            wait_for_condition(lambda: self.pipeline.ingest_file.called, timeout=3.0)
             self.pipeline.ingest_file.assert_called_with(dest_path.resolve(), force=False)
         finally:
             if dest_path.exists():
@@ -160,8 +175,11 @@ class TestWatcherLiveIntegration(unittest.TestCase):
                 doc_file = (watch_path / "live_note.txt").resolve()
                 doc_file.write_text("This is an introductory note about computer networks.", encoding="utf-8")
 
-                # Wait for debounce and processing (0.1 debounce + 0.05 settle + processing = ~0.3s)
-                time.sleep(0.5)
+                # Wait for debounce and processing
+                wait_for_condition(
+                    lambda: db.get_file(doc_file) is not None and db.get_file(doc_file)["status"] == "indexed",
+                    timeout=5.0,
+                )
 
                 # Verify indexed in SQLite and ChromaDB
                 record = db.get_file(doc_file)
@@ -171,7 +189,10 @@ class TestWatcherLiveIntegration(unittest.TestCase):
 
                 # 2. Modify file
                 doc_file.write_text("This is an updated note about compiler design and lexical analysis.", encoding="utf-8")
-                time.sleep(0.5)
+                wait_for_condition(
+                    lambda: db.get_file(doc_file) is not None and db.get_file(doc_file)["file_hash"] != record["file_hash"],
+                    timeout=5.0,
+                )
 
                 updated_record = db.get_file(doc_file)
                 self.assertIsNotNone(updated_record)
@@ -179,7 +200,10 @@ class TestWatcherLiveIntegration(unittest.TestCase):
 
                 # 3. Delete file
                 doc_file.unlink()
-                time.sleep(0.3)
+                wait_for_condition(
+                    lambda: db.get_file(doc_file) is None and vector_store.count() == 0,
+                    timeout=5.0,
+                )
 
                 deleted_record = db.get_file(doc_file)
                 self.assertIsNone(deleted_record)
@@ -188,6 +212,7 @@ class TestWatcherLiveIntegration(unittest.TestCase):
         finally:
             import shutil
             shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 
 if __name__ == "__main__":

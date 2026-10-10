@@ -11,6 +11,7 @@ interface ChatViewProps {
   activeSessionId?: string | null;
   onSessionCreated?: (sessionId: string) => void;
   onSessionsUpdated?: () => void;
+  ollamaConnected?: boolean;
 }
 
 const SAMPLE_QUESTIONS = [
@@ -24,22 +25,29 @@ export const ChatView: React.FC<ChatViewProps> = ({
   activeSessionId = null,
   onSessionCreated,
   onSessionsUpdated,
+  ollamaConnected = true,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputQuestion, setInputQuestion] = useState('');
-  const [provider, setProvider] = useState<'local' | 'cloud'>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('brain_llm_provider');
-      if (saved === 'cloud' || saved === 'local') return saved;
+
+  const envDefault = (process.env.NEXT_PUBLIC_DEFAULT_PROVIDER === 'cloud' || process.env.NEXT_PUBLIC_DEFAULT_PROVIDER === 'local')
+    ? (process.env.NEXT_PUBLIC_DEFAULT_PROVIDER as 'local' | 'cloud')
+    : undefined;
+
+  const [provider, setProvider] = useState<'local' | 'cloud'>(
+    envDefault ?? (ollamaConnected === false ? 'cloud' : 'local')
+  );
+  const [userSelectedProvider, setUserSelectedProvider] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!userSelectedProvider) {
+      setProvider(envDefault ?? (ollamaConnected === false ? 'cloud' : 'local'));
     }
-    return 'cloud';
-  });
+  }, [ollamaConnected, envDefault, userSelectedProvider]);
 
   const handleProviderChange = (p: 'local' | 'cloud') => {
+    setUserSelectedProvider(true);
     setProvider(p);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('brain_llm_provider', p);
-    }
   };
   const [isLoading, setIsLoading] = useState(false);
   const [generalError, setGeneralError] = useState<string | null>(null);
