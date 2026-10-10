@@ -27,7 +27,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputQuestion, setInputQuestion] = useState('');
-  const [provider, setProvider] = useState<'local' | 'cloud'>('local');
+  const [provider, setProvider] = useState<'local' | 'cloud'>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('brain_llm_provider');
+      if (saved === 'cloud' || saved === 'local') return saved;
+    }
+    return 'cloud';
+  });
+
+  const handleProviderChange = (p: 'local' | 'cloud') => {
+    setProvider(p);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('brain_llm_provider', p);
+    }
+  };
   const [isLoading, setIsLoading] = useState(false);
   const [generalError, setGeneralError] = useState<string | null>(null);
 
@@ -247,7 +260,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <div className="inline-flex rounded-md p-0.5 bg-paper border border-moss/20 font-mono text-[11px]">
                 <button
                   type="button"
-                  onClick={() => setProvider('local')}
+                  onClick={() => handleProviderChange('local')}
                   className={`px-3 py-1 rounded transition-colors cursor-pointer flex items-center gap-1.5 ${
                     provider === 'local'
                       ? 'bg-card text-pine font-bold border border-moss/20 shadow-2xs'
@@ -259,7 +272,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setProvider('cloud')}
+                  onClick={() => handleProviderChange('cloud')}
                   className={`px-3 py-1 rounded transition-colors cursor-pointer flex items-center gap-1.5 ${
                     provider === 'cloud'
                       ? 'bg-card text-pine font-bold border border-moss/20 shadow-2xs'
